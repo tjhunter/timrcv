@@ -1,0 +1,14 @@
+[package]
+name = "ranked-voting"
+version = "0.1.0"
+edition = "2021"
+# author = ["Tim Hunter <tjhunter@cs.stanford.edu>"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[workspace]
+
+
+[dependencies]
+ranked_voting = { path = "ranked_voting" }
+env_logger = "0.9"

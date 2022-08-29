@@ -1,0 +1,8 @@
+[package]
+name = "ranked_voting"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4"
+itertools = "0.8"
