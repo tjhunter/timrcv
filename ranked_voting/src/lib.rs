@@ -1,7 +1,6 @@
-use itertools::Itertools;
 use log::{debug, info, warn};
 
-use std::{collections::HashMap, ops::AddAssign};
+use std::{collections::HashMap, hash::Hash, ops::AddAssign};
 
 // Public structures
 
@@ -28,11 +27,28 @@ pub enum VotingErrors {
 struct CandidateId(u32);
 
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
-struct RankedChoice(Vec<CandidateId>);
+struct RankedChoice {
+    first: CandidateId,
+    rest: Vec<CandidateId>,
+}
 
 impl RankedChoice {
-    fn only_candidate(self: &Self) -> Option(CandidateId) {
-        self.0.first()
+    /// Removes certain candidates from the ranked choice. Returns none if there is no candidate left.
+    fn filtered_candidate(self: &Self, blacklist: &Vec<CandidateId>) -> Option<RankedChoice> {
+        let mut choices = vec![self.first];
+        choices.extend(self.rest.clone());
+        let rem_choices: Vec<CandidateId> = choices
+            .iter()
+            .filter(|cid| !blacklist.contains(cid))
+            .cloned()
+            .collect();
+        match &rem_choices[..] {
+            [] => None,
+            [first, rest @ ..] => Some(RankedChoice {
+                first: first.clone(),
+                rest: rest.iter().cloned().collect(),
+            }),
+        }
     }
 }
 
@@ -69,21 +85,22 @@ impl VoteSignature {}
 
 pub fn run_voting_stats(coll: &Vec<Vote>) -> Result<VotingResult, VotingErrors> {
     let (stats, candidates) = checks(coll)?;
+    info!(
+        "Processing {:?} aggregated votes, candidates: {:?}",
+        stats.iter().count(),
+        candidates
+    );
     let candidates_by_id: HashMap<CandidateId, String> = candidates
         .iter()
         .map(|(cname, cid)| (cid.clone(), cname.clone()))
         .collect();
-    let mut cur_stats: &Vec<VoteAgg> = &stats;
+    let mut cur_stats: Vec<VoteAgg> = stats.clone();
 
-    while cur_stats.iter().count() > 0 {
+    while cur_stats.clone().iter().count() > 0 {
         match &cur_stats[..] {
             [] => return Err(VotingErrors::EmptyElection),
             [va] => {
-                let name = match va
-                    .candidates
-                    .only_candidate()
-                    .and_then(|cid| candidates_by_id.get(&cid))
-                {
+                let name = match candidates_by_id.get(&va.candidates.first) {
                     None => unimplemented!(""),
                     Some(cname) => cname.clone(),
                 };
@@ -91,76 +108,98 @@ pub fn run_voting_stats(coll: &Vec<Vote>) -> Result<VotingResult, VotingErrors> 
             }
             _ => {}
         }
-        cur_stats = &run_one_round(cur_stats)?;
+        (cur_stats, _) = run_one_round(&cur_stats)?;
     }
     unimplemented!("");
 }
 
-fn run_one_round(coll: &Vec<VoteAgg>) -> Result<Vec<VoteAgg>, VotingErrors> {
-    unimplemented!("");
+/// Returns the removed candidates, and the remaining votes
+fn run_one_round(votes: &Vec<VoteAgg>) -> Result<(Vec<VoteAgg>, Vec<CandidateId>), VotingErrors> {
+    let by_groups = votes.iter().fold(HashMap::new(), |mut acc, va| {
+        *acc.entry(va.candidates.first).or_insert(VoteCount(0)) += va.count;
+        acc
+    });
+    match by_groups.values().min() {
+        None => return Ok((Vec::new(), Vec::new())),
+        Some(min_count) => {
+            let all_smallest: Vec<CandidateId> = by_groups
+                .iter()
+                .filter_map(|(cid, vc)| if *vc <= *min_count { Some(cid) } else { None })
+                .cloned()
+                .collect();
+            debug!("all_smallest: {:?}", all_smallest);
+            // Filter the rest of the votes to simply keep the votes that still matter
+            let rem_votes: Vec<VoteAgg> = votes
+                .iter()
+                .filter_map(|va| {
+                    // Remove the choices that are not valid anymore
+                    va.candidates
+                        .filtered_candidate(&all_smallest)
+                        .map(|rc| VoteAgg {
+                            candidates: rc,
+                            count: va.count,
+                        })
+                })
+                .collect();
+            debug!("count votes: {:?}", rem_votes.iter().count());
+            Ok((rem_votes, all_smallest))
+        }
+    }
 }
 
-fn checks(_coll: &Vec<Vote>) -> Result<(Vec<VoteAgg>, HashMap<String, CandidateId>), VotingErrors> {
-    unimplemented!("checks")
+fn checks(coll: &Vec<Vote>) -> Result<(Vec<VoteAgg>, HashMap<String, CandidateId>), VotingErrors> {
+    debug!("checks: coll size: {:?}", coll.iter().count());
+    let mut candidates: HashMap<String, CandidateId> = HashMap::new();
+    let mut counter: u32 = 0;
+    let vas: Vec<VoteAgg> = coll
+        .iter()
+        .map(|v| {
+            let cs: Vec<CandidateId> = v
+                .candidates
+                .iter()
+                .map(|c| {
+                    counter += 1;
+                    candidates
+                        .entry(c.clone())
+                        .or_insert(CandidateId(counter))
+                        .clone()
+                })
+                .collect();
+            let randked_choice = match &cs[..] {
+                [first, rest @ ..] => RankedChoice {
+                    first: first.clone(),
+                    rest: rest.iter().cloned().collect(),
+                },
+                _ => {
+                    unimplemented!("bad vote. not implemented {:?}", v);
+                }
+            };
+            VoteAgg {
+                count: VoteCount(v.count),
+                candidates: randked_choice,
+            }
+            // unimplemented!("checks");
+        })
+        .collect();
+    debug!(
+        "checks: vote aggs size: {:?}  candidates: {:?}",
+        vas.iter().count(),
+        candidates.iter().count()
+    );
+    Ok((vas, candidates))
 }
-
-// // Very simple version full of cloning for the time being.
-// fn run_voting_stats_inner(coll: &Vec<VoteAgg>) -> VotingResult {
-//     // Making a copy for the time being
-//     let coll2: Vec<VoteAgg> = coll.iter().filter(|va| va.count.0 > 0).cloned().collect();
-//     debug!("filtered: {:?}", coll2);
-
-//     match &coll2[..] {
-//         [] => return VotingResult::EmptyElection,
-//         [va] => return VotingResult::LeaderFound(va.candidate.clone()),
-//         _ => {
-//             let by_groups = coll2.iter().fold(HashMap::new(), |mut acc, va| {
-//                 *acc.entry(va.candidate).or_insert(VoteCount(0)) += va.count;
-//                 acc
-//             });
-//             match by_groups.values().min() {
-//                 None => return VotingResult::EmptyElection,
-//                 Some(min_count) => {
-//                     let _all_smaller: Vec<(&CandidateId, &VoteCount)> = by_groups
-//                         .iter()
-//                         .filter(|(_, vc)| **vc <= *min_count)
-//                         .collect();
-//                     debug!("_all_smaller: {:?}", _all_smaller);
-//                 }
-//             }
-//             // Find the minimum candidate(s)
-//             let by_cid = &coll2.into_iter().group_by(|key| key.candidate);
-//             let _mini = by_cid
-//                 .into_iter()
-//                 .map(|(cid, gr)| (cid, gr.map(|va| va.count).sum::<VoteCount>()));
-
-//             if coll.into_iter().count() > 0 {
-//                 VotingResult::LeaderFound(CandidateId(0))
-//             } else {
-//                 VotingResult::NoMajorityCandidate
-//             }
-//         }
-//     }
-// }
-
-// pub fn run_voting_stats0<'a>(coll: &(impl IntoIterator<Item = &'a VoteAgg> + Copy)) -> VotingResult {
-//     debug!("count: {:?}", coll.into_iter().count());
-//     debug!("count: {:?}", coll.into_iter().count());
-
-//     coll.into_iter().filter(|va| va.count.0 > 0);
-
-//     if coll.into_iter().count() > 0 {
-//         VotingResult::LeaderFound(CandidateId(0))
-//     } else {
-//         VotingResult::NoMajorityCandidate
-//     }
-// }
 
 pub fn add_one(x: i32) -> i32 {
-    let data = vec![Vote {
-        candidates: vec!["a".to_string(), "b".to_string()],
-        count: 1,
-    }];
+    let data = vec![
+        Vote {
+            candidates: vec!["a".to_string(), "b".to_string()],
+            count: 1,
+        },
+        Vote {
+            candidates: vec!["x".to_string(), "b".to_string()],
+            count: 2,
+        },
+    ];
 
     info!("data {:?}", data);
 
