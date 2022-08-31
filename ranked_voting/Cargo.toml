@@ -5,4 +5,6 @@ edition = "2021"
 
 [dependencies]
 log = "0.4"
+nanoserde = "0.1"
+# todo remove
 itertools = "0.8"

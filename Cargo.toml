@@ -11,4 +11,6 @@ edition = "2021"
 
 [dependencies]
 ranked_voting = { path = "ranked_voting" }
+log = "0.4"
 env_logger = "0.9"
+calamine = "0.18"
