@@ -138,7 +138,7 @@ pub fn run_voting_stats(
                 };
                 return Ok(VotingResult::SingleWinner(
                     name,
-                    config::ResultStats { rounds: Vec::new() },
+                    config::ResultStats { rounds: cur_stats },
                 ));
             }
             _ => {}
