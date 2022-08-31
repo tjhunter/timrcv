@@ -160,6 +160,9 @@ fn run_one_round(
         *acc.entry(va.candidates.first).or_insert(VoteCount(0)) += va.count;
         acc
     });
+
+    debug!("tally: {:?}", by_groups);
+
     match by_groups.values().min() {
         None => {
             // TODO: no min values => empty? it should not happen, really
@@ -216,8 +219,8 @@ fn run_one_round(
                             let e2 = e.0.entry(cid).or_insert(VoteCount::EMPTY);
                             *e2 += va.count;
                         }
-                        _ => {
-                            // Nothing to do, the first choice has not changed.
+                        Some(_) => {
+                            // Nothing to do
                         }
                     }
 
@@ -291,7 +294,7 @@ fn checks(
                     } else {
                         let cid: CandidateId = candidates
                             .entry(c.clone())
-                            .or_insert({
+                            .or_insert_with(|| {
                                 counter += 1;
                                 CandidateId(counter)
                             })

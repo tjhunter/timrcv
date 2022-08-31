@@ -31,7 +31,7 @@ pub struct VoteRules {
     // TODO hareQuota
     // TODO batchElimination
     // TODO continueUntilTwoCandidatesRemain
-    // TODO exhaustOnDuplicateCandidate
+    // TODO exhaustOnDuplicateCandidate <- do this one TODO
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]
