@@ -1,6 +1,6 @@
-use env_logger;
+
 use log::{debug, info, warn};
-use ranked_voting;
+
 use ranked_voting::*;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -194,7 +194,7 @@ fn read_excel_file(path: String, _cfs: &FileSource) -> AHResult<Vec<ranked_votin
         };
         res.push(Vote {
             candidates: cs.clone(),
-            count: count,
+            count,
         });
     }
     Ok(res)
@@ -295,7 +295,7 @@ fn main() {
             name: c.name.clone(),
             code: match c.code.clone() {
                 Some(x) if x.is_empty() => None,
-                x => x.clone(),
+                x => x,
             },
             excluded: c.excluded.unwrap_or(false),
         })
@@ -322,7 +322,7 @@ fn main() {
         warn!("Found differences with the reference string");
         print_diff(
             pretty_js_summary_ref.as_str(),
-            &pretty_js_stats.as_ref(),
+            pretty_js_stats.as_ref(),
             "\n",
         );
     }
