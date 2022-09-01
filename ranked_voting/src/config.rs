@@ -76,9 +76,3 @@ pub struct RoundStats {
     pub tally_results_elected: Vec<String>,
     pub tally_result_eliminated: Vec<EliminationStats>,
 }
-
-/// Result statistics that can the be processed by analysis tools.
-#[derive(Eq, PartialEq, Debug, Clone)]
-pub struct ResultStats {
-    pub rounds: Vec<RoundStats>,
-}

@@ -1,5 +1,5 @@
 use env_logger;
-use log::{debug, info};
+use log::{debug, info, warn};
 use ranked_voting;
 use ranked_voting::*;
 use std::fs;
@@ -13,8 +13,9 @@ use calamine::{open_workbook, Reader, Xlsx};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use serde_json::Value;
-// use serde_json::Value::{Array, Bool, Number, Object, String as JSString};
+use serde_json::Map as JSMap;
+use serde_json::Value as JSValue;
+use text_diff::print_diff;
 
 #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 struct OutputSettings {
@@ -98,24 +99,25 @@ struct RcvConfig {
     rules: RcvRules,
 }
 
-fn result_stats_to_json(rs: &ResultStats) -> Vec<Value> {
-    let mut l: Vec<Value> = Vec::new();
-    for round_stat in rs.rounds.clone() {
-        let tally: Vec<Value> = round_stat
-            .tally
-            .iter()
-            .map(|(name, count)| json!({name.clone() : count.to_string()}))
-            .collect();
+fn result_stats_to_json(rs: &VotingResult) -> Vec<JSValue> {
+    let mut l: Vec<JSValue> = Vec::new();
+    for round_stat in rs.round_stats.clone() {
+        let mut tally: JSMap<String, JSValue> = JSMap::new();
+        for (name, count) in round_stat.tally {
+            tally.insert(name.clone(), json!(count.to_string()));
+        }
 
-        let mut tally_results: Vec<Value> = Vec::new();
+        let mut tally_results: Vec<JSValue> = Vec::new();
         for elim_stats in round_stat.tally_result_eliminated {
-            let mut transfers: Vec<Value> = elim_stats
-                .transfers
-                .iter()
-                .map(|(name, count)| json!({name.clone(): count.to_string()}))
-                .collect();
+            let mut transfers: JSMap<String, JSValue> = JSMap::new();
+            for (name, count) in elim_stats.transfers {
+                transfers.insert(name, json!(count.to_string()));
+            }
             if elim_stats.exhausted > 0 {
-                transfers.push(json!({"exhausted": elim_stats.exhausted.to_string()}));
+                transfers.insert(
+                    "exhausted".to_string(),
+                    json!(elim_stats.exhausted.to_string()),
+                );
             }
             tally_results.push(json!({
                 "eliminated": elim_stats.name,
@@ -129,12 +131,12 @@ fn result_stats_to_json(rs: &ResultStats) -> Vec<Value> {
     l
 }
 
-fn read_summary(path: String) -> AHResult<ResultStats> {
+fn read_summary(path: String) -> AHResult<JSValue> {
     let contents = fs::read_to_string(path)?;
     debug!("read content: {:?}", contents);
-    let js: Value = serde_json::from_str(contents.as_str())?;
+    let js: JSValue = serde_json::from_str(contents.as_str())?;
     debug!("read content: {:?}", js["results"].as_array().unwrap());
-    Ok(ResultStats { rounds: Vec::new() })
+    Ok(js)
 }
 
 fn read_excel_file(path: String, _cfs: &FileSource) -> AHResult<Vec<ranked_voting::Vote>> {
@@ -303,10 +305,25 @@ fn main() {
 
     info!("res {:?}", res);
 
-    // TODO
-    // let pretty_js_stats = serde_json::to_string_pretty(&result_stats_to_json(&x)).unwrap();
-    // println!("stats:{}", pretty_js_stats);
+    let result = res.unwrap();
 
-    let summary = read_summary("/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data/precinct_example/precinct_example_expected_summary.json".to_string());
-    info!("summary: {:?}", summary);
+    // Assemble the final json
+    let result_js = json!({ "results": result_stats_to_json(&result) });
+
+    // TODO
+    let pretty_js_stats = serde_json::to_string_pretty(&result_js).unwrap();
+    println!("stats:{}", pretty_js_stats);
+
+    // The reference summary, if provided for comparison
+    let summary_ref = read_summary("/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data/duplicate_test/duplicate_test_expected_summary.json".to_string()).unwrap();
+    info!("summary: {:?}", summary_ref);
+    let pretty_js_summary_ref = serde_json::to_string_pretty(&summary_ref).unwrap();
+    if pretty_js_summary_ref != pretty_js_stats {
+        warn!("Found differences with the reference string");
+        print_diff(
+            pretty_js_summary_ref.as_str(),
+            &pretty_js_stats.as_ref(),
+            "\n",
+        );
+    }
 }
