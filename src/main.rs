@@ -14,7 +14,7 @@ use calamine::{open_workbook, Reader, Xlsx};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::Value;
-use serde_json::Value::{Array, Bool, Number, Object, String as JSString};
+// use serde_json::Value::{Array, Bool, Number, Object, String as JSString};
 
 #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 struct OutputSettings {
@@ -76,12 +76,16 @@ struct RcvRules {
     overvote_rule: String,
     #[serde(rename = "winnerElectionMode")]
     winner_election_mode: String,
+    #[serde(rename = "randomSeed")]
+    random_seed: Option<String>,
     #[serde(rename = "maxSkippedRanksAllowed")]
     max_skipped_ranks_allowed: String,
     #[serde(rename = "maxRankingsAllowed")]
     max_rankings_allowed: String,
     #[serde(rename = "rulesDescription")]
     rules_description: Option<String>,
+    #[serde(rename = "exhaustOnDuplicateCandidate")]
+    exhaust_on_duplicate_candidate: Option<bool>,
 }
 
 #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
@@ -94,23 +98,35 @@ struct RcvConfig {
     rules: RcvRules,
 }
 
-fn result_stats_to_json(rs: &ResultStats) -> Value {
-    let x: Vec<Value> = rs
-        .rounds
-        .iter()
-        .enumerate()
-        .map(|(idx, rs)| {
-            let mut tally2 = rs.tally.clone();
-            tally2.sort_by_key(|rcs| rcs.name.clone());
-            let tally: Vec<Value> = tally2
+fn result_stats_to_json(rs: &ResultStats) -> Vec<Value> {
+    let mut l: Vec<Value> = Vec::new();
+    for round_stat in rs.rounds.clone() {
+        let tally: Vec<Value> = round_stat
+            .tally
+            .iter()
+            .map(|(name, count)| json!({name.clone() : count.to_string()}))
+            .collect();
+
+        let mut tally_results: Vec<Value> = Vec::new();
+        for elim_stats in round_stat.tally_result_eliminated {
+            let mut transfers: Vec<Value> = elim_stats
+                .transfers
                 .iter()
-                .map(|rcs| json!({rcs.name.clone() : rcs.tally.to_string()}))
+                .map(|(name, count)| json!({name.clone(): count.to_string()}))
                 .collect();
-            // TODO: tallyResults
-            json!({"round": idx + 1, "tally": tally})
-        })
-        .collect();
-    json!({ "results": x })
+            if elim_stats.exhausted > 0 {
+                transfers.push(json!({"exhausted": elim_stats.exhausted.to_string()}));
+            }
+            tally_results.push(json!({
+                "eliminated": elim_stats.name,
+                "transfers": transfers
+            }));
+        }
+
+        let js = json!({"round": round_stat.round, "tally": tally, "tallyResults": tally_results});
+        l.push(js);
+    }
+    l
 }
 
 fn read_summary(path: String) -> AHResult<ResultStats> {
@@ -192,6 +208,58 @@ fn read_ranking_data(root_path: String, cfs: &FileSource) -> AHResult<Vec<ranked
     }
 }
 
+fn validate_rules(rcv_rules: &RcvRules) -> AHResult<VoteRules> {
+    let res = VoteRules {
+        tiebreak_mode: match rcv_rules.tiebreak_mode.as_str() {
+            "useCandidateOrder" => TieBreakMode::UseCandidateOrder,
+            "random" => {
+                let seed = match rcv_rules.random_seed.clone().map(|s| s.parse::<u32>()) {
+                    Some(Ok(x)) => x,
+                    x => {
+                        return Err(anyhow!(
+                            "Cannot use tiebreak mode {:?} (currently not implemented)",
+                            x
+                        ));
+                    }
+                };
+                TieBreakMode::Random(seed)
+            }
+            x => {
+                return Err(anyhow!(
+                    "Cannot use tiebreak mode {:?} (currently not implemented)",
+                    x
+                ));
+            }
+        },
+        winner_election_mode: match rcv_rules.winner_election_mode.as_str() {
+            "singleWinnerMajority" => WinnerElectionMode::SingelWinnerMajority,
+            x => {
+                return Err(anyhow!(
+                    "Cannot use election mode {:?}: currently not implemented",
+                    x
+                ));
+            }
+        },
+        number_of_winners: 1,         // TODO: implement
+        minimum_vote_threshold: None, // TODO: implement
+        max_rankings_allowed: match rcv_rules.max_rankings_allowed.parse::<u32>() {
+            Err(_) if rcv_rules.max_rankings_allowed == "max" => None,
+            Ok(x) if x > 0 => Some(x),
+            x => {
+                return Err(anyhow!(
+                    "Failed to understand maxRankingsAllowed option: {:?}: currently not implemented",
+                    x
+                ));
+            }
+        },
+        duplicate_candidate_mode: match rcv_rules.exhaust_on_duplicate_candidate {
+            Some(true) => DuplicateCandidateMode::Exhaust,
+            _ => DuplicateCandidateMode::SkipDuplicate,
+        },
+    };
+    Ok(res)
+}
+
 fn main() {
     env_logger::init();
 
@@ -200,6 +268,9 @@ fn main() {
     let config_str = fs::read_to_string(config_path).unwrap();
     let config: RcvConfig = serde_json::from_str(&config_str).unwrap();
     info!("config: {:?}", config);
+
+    // Validate the rules:
+    let rules = validate_rules(&config.rules).unwrap();
 
     if config.cvr_file_sources.is_empty() {
         unimplemented!("no file sources detected");
@@ -214,15 +285,6 @@ fn main() {
     }
 
     info!("data: {:?}", data);
-
-    // TODO: do not hardcode the rules
-    let rules = VoteRules {
-        tiebreak_mode: TieBreakMode::UseCandidateOrder,
-        winner_election_mode: WinnerElectionMode::SingelWinnerMajority,
-        number_of_winners: 1,
-        minimum_vote_threshold: None,
-        max_rankings_allowed: None,
-    };
 
     let candidates: Vec<Candidate> = config
         .candidates
@@ -241,12 +303,9 @@ fn main() {
 
     info!("res {:?}", res);
 
-    let x = match res.unwrap() {
-        VotingResult::NoMajorityCandidate => unimplemented!(""),
-        VotingResult::SingleWinner(_, s) => s,
-    };
-    let pretty_js_stats = serde_json::to_string_pretty(&result_stats_to_json(&x)).unwrap();
-    println!("stats:{}", pretty_js_stats);
+    // TODO
+    // let pretty_js_stats = serde_json::to_string_pretty(&result_stats_to_json(&x)).unwrap();
+    // println!("stats:{}", pretty_js_stats);
 
     let summary = read_summary("/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data/precinct_example/precinct_example_expected_summary.json".to_string());
     info!("summary: {:?}", summary);

@@ -6,7 +6,16 @@
 pub enum TieBreakMode {
     // stopCountingAndAsk is not going to be implemented.
     UseCandidateOrder,
+    // Note: the random mode is implemented differently. It uses a cryptographic hash on the candidate
+    // names instead of relying on the java primitives.
+    Random(u32),
     // TODO add the other modes
+}
+
+#[derive(Eq, PartialEq, Debug, Clone, Copy)]
+pub enum DuplicateCandidateMode {
+    Exhaust,
+    SkipDuplicate,
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]
@@ -31,7 +40,18 @@ pub struct VoteRules {
     // TODO hareQuota
     // TODO batchElimination
     // TODO continueUntilTwoCandidatesRemain
-    // TODO exhaustOnDuplicateCandidate <- do this one TODO
+    pub duplicate_candidate_mode: DuplicateCandidateMode,
+}
+
+impl VoteRules {
+    pub const DEFAULT_RULES: VoteRules = VoteRules {
+        tiebreak_mode: TieBreakMode::UseCandidateOrder,
+        winner_election_mode: WinnerElectionMode::SingelWinnerMajority,
+        number_of_winners: 1,
+        minimum_vote_threshold: None,
+        max_rankings_allowed: None,
+        duplicate_candidate_mode: DuplicateCandidateMode::SkipDuplicate,
+    };
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]
@@ -42,25 +62,19 @@ pub struct Candidate {
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub enum RoundCandidateStatus {
-    StillRunning,
-    Elected,
-    /// if eliminated, the transfers of the votes to each candidate
-    /// the last element is the number of exhausted votes
-    Eliminated(Vec<(String, u64)>, u64),
-}
-
-#[derive(Eq, PartialEq, Debug, Clone)]
-pub struct RoundCandidateStats {
+pub struct EliminationStats {
     pub name: String,
-    pub tally: u64,
-    pub status: RoundCandidateStatus,
+    pub transfers: Vec<(String, u64)>,
+    pub exhausted: u64,
 }
 
 /// Statistics for one round
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct RoundStats {
-    pub tally: Vec<RoundCandidateStats>,
+    pub round: u32,
+    pub tally: Vec<(String, u64)>,
+    pub tally_results_elected: Vec<String>,
+    pub tally_result_eliminated: Vec<EliminationStats>,
 }
 
 /// Result statistics that can the be processed by analysis tools.

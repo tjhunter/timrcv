@@ -1,6 +1,5 @@
 mod config;
-use log::{debug, info, warn};
-// use nanoserde::DeJson;
+use log::{debug, info};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -19,9 +18,10 @@ pub struct Vote {
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub enum VotingResult {
-    SingleWinner(String, ResultStats),
-    NoMajorityCandidate,
+pub struct VotingResult {
+    // TODO: replace by an enumeration: SingleWinner, MultiWinner, NoWinner
+    pub winners: Option<Vec<String>>,
+    pub round_stats: Vec<RoundStats>,
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]
@@ -30,6 +30,8 @@ pub enum VotingErrors {
 }
 
 // **** Private structures ****
+
+type RoundId = u32;
 
 #[derive(Eq, PartialEq, Debug, Clone, Copy, Hash)]
 struct CandidateId(u32);
@@ -42,9 +44,21 @@ struct RankedChoice {
 
 impl RankedChoice {
     /// Removes all the eliminated candidates from the list of choices.
-    fn filtered_candidate(self: &Self, eliminated: &HashSet<CandidateId>) -> Option<RankedChoice> {
+    /// Takes into account the policy for duplicated candidates. If the head candidates appears multiple
+    /// time under the exhaust policy, this ballot will be exhausted.
+    fn filtered_candidate(
+        self: &Self,
+        eliminated: &HashSet<CandidateId>,
+        duplicate_policy: DuplicateCandidateMode,
+    ) -> Option<RankedChoice> {
         let mut choices = vec![self.first];
         choices.extend(self.rest.clone());
+        // See if the current top candidate is present multiple time.
+        if duplicate_policy == DuplicateCandidateMode::Exhaust
+            && self.rest.iter().any(|&cid| cid == self.first)
+        {
+            return None;
+        }
         let rem_choices: Vec<CandidateId> = choices
             .iter()
             .filter(|cid| !eliminated.contains(cid))
@@ -95,6 +109,21 @@ struct VoteSignature {
 
 impl VoteSignature {}
 
+#[derive(Eq, PartialEq, Debug, Clone)]
+enum RoundCandidateStatusInternal {
+    StillRunning,
+    // Elected,
+    /// if eliminated, the transfers of the votes to each candidate
+    /// the last element is the number of exhausted votes
+    Eliminated(Vec<(CandidateId, VoteCount)>, VoteCount),
+}
+
+#[derive(Eq, PartialEq, Debug, Clone)]
+struct RoundResult {
+    votes: Vec<VoteInternal>,
+    stats: Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>,
+}
+
 /// Runs the voting algorithm with the given rules for the given votes.
 ///
 /// Arguments:
@@ -125,10 +154,11 @@ pub fn run_voting_stats(
         .map(|(cname, cid)| (cid.clone(), cname.clone()))
         .collect();
     let mut cur_votes: Vec<VoteInternal> = stats.clone();
-    let mut cur_stats: Vec<config::RoundStats> = Vec::new();
+    let mut cur_stats: Vec<Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>> =
+        Vec::new();
 
     while cur_votes.clone().iter().count() > 0 {
-        let round_id = cur_stats.iter().count() + 1;
+        let round_id = (cur_stats.iter().count() + 1) as RoundId;
         match &cur_votes[..] {
             [] => return Err(VotingErrors::EmptyElection),
             [va] => {
@@ -136,131 +166,182 @@ pub fn run_voting_stats(
                     None => unimplemented!(""),
                     Some(cname) => cname.clone(),
                 };
-                return Ok(VotingResult::SingleWinner(
-                    name,
-                    config::ResultStats { rounds: cur_stats },
-                ));
+                return Ok(VotingResult {
+                    winners: Some(vec![name]),
+                    round_stats: round_results_to_stats(&cur_stats, &candidates_by_id)?,
+                });
             }
             _ => {}
         }
-        let (next_votes, _, round_stats) = run_one_round(&cur_votes, &candidates_by_id)?;
-        info!("Round id: {:?} stats: {:?}", round_id, round_stats);
-        cur_votes = next_votes;
-        cur_stats.push(round_stats);
+        let round_res = run_one_round(&cur_votes, &rules)?;
+        info!("Round id: {:?} stats: {:?}", round_id, round_res.stats);
+        cur_votes = round_res.votes;
+        cur_stats.push(round_res.stats);
     }
+
     unimplemented!("");
+}
+
+fn round_results_to_stats(
+    results: &Vec<Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>>,
+    candidates_by_id: &HashMap<CandidateId, String>,
+) -> Result<Vec<RoundStats>, VotingErrors> {
+    let mut res: Vec<RoundStats> = Vec::new();
+    for (idx, r) in results.iter().enumerate() {
+        let round_id: RoundId = idx as u32 + 1;
+        res.push(round_result_to_stat(r, round_id, candidates_by_id)?);
+    }
+    Ok(res)
+}
+
+fn round_result_to_stat(
+    stats: &Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>,
+    round_id: RoundId,
+    candidates_by_id: &HashMap<CandidateId, String>,
+) -> Result<RoundStats, VotingErrors> {
+    let mut rs = config::RoundStats {
+        round: round_id,
+        tally: Vec::new(),
+        tally_results_elected: Vec::new(),
+        tally_result_eliminated: Vec::new(),
+    };
+
+    for (cid, c, status) in stats.clone() {
+        let name: &String = candidates_by_id
+            .get(&cid)
+            .ok_or_else(|| (VotingErrors::EmptyElection))?; // TODO: wrong error
+        rs.tally.push((name.clone(), c.0));
+        match status {
+            RoundCandidateStatusInternal::StillRunning => {
+                // Nothing to say about this candidate
+            }
+            RoundCandidateStatusInternal::Eliminated(transfers, exhausts) => {
+                let mut pub_transfers: Vec<(String, u64)> = Vec::new();
+                for (t_cid, t_count) in transfers {
+                    let t_name: &String = candidates_by_id
+                        .get(&t_cid)
+                        .ok_or_else(|| (VotingErrors::EmptyElection))?; // TODO: wrong error
+                    pub_transfers.push((t_name.clone(), t_count.0));
+                }
+                rs.tally_result_eliminated.push(config::EliminationStats {
+                    name: name.clone(),
+                    transfers: pub_transfers,
+                    exhausted: exhausts.0,
+                });
+            }
+        }
+    }
+    Ok(rs)
 }
 
 /// Returns the removed candidates, and the remaining votes
 fn run_one_round(
     votes: &Vec<VoteInternal>,
-    candidate_ids: &HashMap<CandidateId, String>, // Needed for the stats. just return everything with candidate ids from this function
-) -> Result<(Vec<VoteInternal>, Vec<CandidateId>, config::RoundStats), VotingErrors> {
-    let by_groups = votes.iter().fold(HashMap::new(), |mut acc, va| {
+    rules: &config::VoteRules,
+) -> Result<RoundResult, VotingErrors> {
+    let tally = votes.iter().fold(HashMap::new(), |mut acc, va| {
         *acc.entry(va.candidates.first).or_insert(VoteCount(0)) += va.count;
         acc
     });
 
-    debug!("tally: {:?}", by_groups);
+    debug!("tally: {:?}", tally);
 
-    match by_groups.values().min() {
-        None => {
-            // TODO: no min values => empty? it should not happen, really
-            return Ok((
-                Vec::new(),
-                Vec::new(),
-                config::RoundStats { tally: Vec::new() },
-            ));
+    let min_count: VoteCount = {
+        match tally.values().min() {
+            None => {
+                // TODO: no min values => empty? it should not happen, really
+                return Ok(RoundResult {
+                    votes: Vec::new(),
+                    stats: Vec::new(),
+                });
+            }
+            Some(c) => *c,
         }
-        Some(min_count) => {
-            let all_smallest: Vec<CandidateId> = by_groups
-                .iter()
-                .filter_map(|(cid, vc)| if *vc <= *min_count { Some(cid) } else { None })
-                .cloned()
-                .collect();
-            debug!("all_smallest: {:?}", all_smallest);
-            assert!(all_smallest.iter().count() > 0);
+    };
 
-            // TODO the strategy to pick the candidates to eliminate.
-            // For now, it is simply all the candidates with the smallest number of votes
+    let all_smallest: Vec<CandidateId> = tally
+        .iter()
+        .filter_map(|(cid, vc)| if *vc <= min_count { Some(cid) } else { None })
+        .cloned()
+        .collect();
+    debug!("all_smallest: {:?}", all_smallest);
+    assert!(all_smallest.iter().count() > 0);
 
-            let eliminated_candidates: HashSet<CandidateId> =
-                all_smallest.iter().cloned().collect();
+    // TODO strategy to pick the winning candidates
 
-            // Statistics about transfers:
-            // For every eliminated candidates, keep the vote transfer, or the exhausted vote.
-            let mut elimination_stats: HashMap<
-                CandidateId,
-                (HashMap<CandidateId, VoteCount>, VoteCount),
-            > = HashMap::new();
+    // TODO the strategy to pick the candidates to eliminate.
+    // For now, it is simply all the candidates with the smallest number of votes
 
-            // Filter the rest of the votes to simply keep the votes that still matter
-            let rem_votes: Vec<VoteInternal> = votes
-                .iter()
-                .filter_map(|va| {
-                    // Remove the choices that are not valid anymore and collect statistics.
-                    let new_rank = va.candidates.filtered_candidate(&eliminated_candidates);
-                    let new_first = new_rank.clone().map(|nr| nr.first);
-                    let first = va.candidates.first;
+    let eliminated_candidates: HashSet<CandidateId> = all_smallest.iter().cloned().collect();
 
-                    match new_first {
-                        None => {
-                            // The vote has been exhausted
-                            let e = elimination_stats
-                                .entry(first)
-                                .or_insert((HashMap::new(), VoteCount::EMPTY));
-                            e.1 += va.count;
-                        }
-                        Some(cid) if eliminated_candidates.contains(&first) => {
-                            // The vote has been transfered. Record the transfer.
-                            let e = elimination_stats
-                                .entry(first)
-                                .or_insert((HashMap::new(), VoteCount::EMPTY));
-                            let e2 = e.0.entry(cid).or_insert(VoteCount::EMPTY);
-                            *e2 += va.count;
-                        }
-                        Some(_) => {
-                            // Nothing to do
-                        }
-                    }
+    // Statistics about transfers:
+    // For every eliminated candidates, keep the vote transfer, or the exhausted vote.
+    let mut elimination_stats: HashMap<CandidateId, (HashMap<CandidateId, VoteCount>, VoteCount)> =
+        eliminated_candidates
+            .iter()
+            .map(|cid| (cid.clone(), (HashMap::new(), VoteCount::EMPTY)))
+            .collect();
 
-                    new_rank.map(|rc| VoteInternal {
-                        candidates: rc,
-                        count: va.count,
-                    })
-                })
-                .collect();
+    // Filter the rest of the votes to simply keep the votes that still matter
+    let rem_votes: Vec<VoteInternal> = votes
+        .iter()
+        .filter_map(|va| {
+            // Remove the choices that are not valid anymore and collect statistics.
+            let new_rank = va
+                .candidates
+                .filtered_candidate(&eliminated_candidates, rules.duplicate_candidate_mode);
+            let new_first = new_rank.clone().map(|nr| nr.first);
+            let first = va.candidates.first;
 
-            let stats = RoundStats {
-                tally: elimination_stats
-                    .iter()
-                    .map(|(cid, (reports, exhausted))| {
-                        let name = candidate_ids.get(cid).unwrap();
-                        // The elimination stats
-                        let eli_stats: Vec<(String, u64)> = reports
-                            .iter()
-                            .map(|(report_cid, report_count)| {
-                                (
-                                    candidate_ids.get(report_cid).unwrap().clone(),
-                                    report_count.0,
-                                )
-                            })
-                            .collect();
-                        let part_tally: u64 = eli_stats.iter().map(|(_, c)| c.clone()).sum();
-                        let tally: u64 = part_tally + exhausted.0;
-                        RoundCandidateStats {
-                            name: name.clone(),
-                            tally: tally,
-                            status: RoundCandidateStatus::Eliminated(eli_stats, exhausted.0),
-                        }
-                    })
-                    .collect(),
-            };
-            debug!("count votes: {:?}", rem_votes.iter().count());
+            match new_first {
+                None => {
+                    // The vote has been exhausted
+                    let e = elimination_stats
+                        .entry(first)
+                        .or_insert((HashMap::new(), VoteCount::EMPTY));
+                    e.1 += va.count;
+                }
+                Some(cid) if eliminated_candidates.contains(&first) => {
+                    // The vote has been transfered. Record the transfer.
+                    let e = elimination_stats
+                        .entry(first)
+                        .or_insert((HashMap::new(), VoteCount::EMPTY));
+                    let e2 = e.0.entry(cid).or_insert(VoteCount::EMPTY);
+                    *e2 += va.count;
+                }
+                Some(_) => {
+                    // Nothing to do
+                }
+            }
 
-            Ok((rem_votes, all_smallest, stats))
+            new_rank.map(|rc| VoteInternal {
+                candidates: rc,
+                count: va.count,
+            })
+        })
+        .collect();
+
+    let mut round_stats: Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)> = Vec::new();
+    for (&cid, &count) in tally.iter() {
+        if let Some((transfers, exhaust)) = elimination_stats.get(&cid) {
+            round_stats.push((
+                cid,
+                count,
+                RoundCandidateStatusInternal::Eliminated(
+                    transfers.iter().map(|(cid2, c2)| (*cid2, *c2)).collect(),
+                    *exhaust,
+                ),
+            ))
+        } else {
+            // Not eliminated, still running
+            round_stats.push((cid, count, RoundCandidateStatusInternal::StillRunning));
         }
     }
+
+    return Ok(RoundResult {
+        votes: rem_votes,
+        stats: round_stats,
+    });
 }
 
 fn checks(
@@ -325,35 +406,4 @@ fn checks(
         candidates.iter().count()
     );
     Ok((vas, candidates))
-}
-
-pub fn add_one(x: i32) -> i32 {
-    let data = vec![
-        Vote {
-            candidates: vec!["a".to_string(), "b".to_string()],
-            count: 1,
-        },
-        Vote {
-            candidates: vec!["x".to_string(), "b".to_string()],
-            count: 2,
-        },
-    ];
-
-    info!("data {:?}", data);
-
-    let rules = config::VoteRules {
-        tiebreak_mode: config::TieBreakMode::UseCandidateOrder,
-        winner_election_mode: config::WinnerElectionMode::SingelWinnerMajority,
-        number_of_winners: 1,
-        minimum_vote_threshold: None,
-        max_rankings_allowed: None,
-    };
-
-    let res = run_voting_stats(&data, &rules, &None);
-
-    info!("res {:?}", res);
-
-    info!("info arg {:?}", x);
-    warn!("info arg {:?}", x);
-    x + 1
 }
