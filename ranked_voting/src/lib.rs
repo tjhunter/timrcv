@@ -21,6 +21,7 @@ pub struct Vote {
 pub struct VotingResult {
     // TODO: replace by an enumeration: SingleWinner, MultiWinner, NoWinner
     pub winners: Option<Vec<String>>,
+    pub threshold: u64,
     pub round_stats: Vec<RoundStats>,
 }
 
@@ -48,7 +49,7 @@ impl RankedChoice {
     /// Takes into account the policy for duplicated candidates. If the head candidates appears multiple
     /// time under the exhaust policy, this ballot will be exhausted.
     fn filtered_candidate(
-        self: &Self,
+        &self,
         eliminated: &HashSet<CandidateId>,
         duplicate_policy: DuplicateCandidateMode,
     ) -> Option<RankedChoice> {
@@ -68,8 +69,8 @@ impl RankedChoice {
         match &rem_choices[..] {
             [] => None,
             [first, rest @ ..] => Some(RankedChoice {
-                first: first.clone(),
-                rest: rest.iter().cloned().collect(),
+                first: *first,
+                rest: rest.to_vec(),
             }),
         }
     }
@@ -150,6 +151,13 @@ pub fn run_voting_stats(
         stats.iter().count(),
         all_candidates
     );
+
+    let mut initial_count: VoteCount = VoteCount::EMPTY;
+    for v in stats.iter() {
+        initial_count += v.count;
+    }
+    let vote_threshold = simple_majority_threshold(initial_count);
+
     let mut cur_votes: Vec<VoteInternal> = stats.clone();
     let mut cur_stats: Vec<Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>> =
         Vec::new();
@@ -186,12 +194,25 @@ pub fn run_voting_stats(
                 winner_names.push(candidates_by_id.get(&cid).unwrap().clone());
             }
             return Ok(VotingResult {
+                threshold: vote_threshold.0,
                 winners: Some(winner_names),
                 round_stats: stats,
             });
         }
     }
     Err(VotingErrors::NoConvergence)
+}
+
+fn simple_majority_threshold(total_count: VoteCount) -> VoteCount {
+    if total_count == VoteCount::EMPTY {
+        VoteCount::EMPTY
+    } else {
+        // TODO: unclear why it should be this.
+        VoteCount(total_count.0 / 2)
+    }
+    //  else {
+    //     VoteCount(total_count.0 / 2 + 1)
+    // }
 }
 
 fn round_results_to_stats(
