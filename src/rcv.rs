@@ -3,7 +3,6 @@ use log::{debug, info, warn};
 use ranked_voting::*;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
 use anyhow::Result as AHResult;
 use anyhow::{anyhow, Ok};
@@ -52,9 +51,9 @@ struct FileSource {
     #[serde(rename = "contestId")]
     contest_id: Option<String>,
     #[serde(rename = "firstVoteColumnIndex")]
-    first_vote_column_index: Option<String>,
+    first_vote_column_index: Option<JSValue>,
     #[serde(rename = "firstVoteRowIndex")]
-    first_vote_row_index: Option<String>,
+    first_vote_row_index: Option<JSValue>,
     #[serde(rename = "idColumnIndex")]
     id_column_index: Option<String>,
     #[serde(rename = "precinctColumnIndex")]
@@ -159,6 +158,17 @@ fn read_summary(path: String) -> AHResult<JSValue> {
     Ok(js)
 }
 
+fn read_js_int(x: &Option<JSValue>) -> AHResult<usize> {
+    match x {
+        Some(JSValue::Number(n)) => match n.as_u64() {
+            Some(y) => Ok(y as usize),
+            None => Err(anyhow!("not a number {:?}", x)),
+        },
+        Some(JSValue::String(s)) => s.parse::<usize>().or(Err(anyhow!("not a number {:?}", x))),
+        _ => Err(anyhow!("not a number {:?}", x)),
+    }
+}
+
 fn read_excel_file(path: String, _cfs: &FileSource) -> AHResult<Vec<ranked_voting::Vote>> {
     let mut workbook: Xlsx<_> = open_workbook(path)?;
     let wrange = workbook
@@ -169,12 +179,8 @@ fn read_excel_file(path: String, _cfs: &FileSource) -> AHResult<Vec<ranked_votin
         .next()
         .ok_or(CError::Msg("Missing first row"))?;
     debug!("header: {:?}", header);
-    let start_range: usize = match _cfs
-        .first_vote_column_index
-        .clone()
-        .map(|s| s.parse::<i32>())
-    {
-        Some(Result::Ok(x)) if x >= 1 => (x - 1) as usize,
+    let start_range: usize = match read_js_int(&_cfs.first_vote_column_index) {
+        Result::Ok(x) if x >= 1 => (x - 1) as usize,
         _ => unimplemented!(
             "failed to find start range {:?}",
             _cfs.first_vote_column_index
@@ -373,33 +379,31 @@ pub fn run_election(config_path: String, check_summary_path: Option<String>) -> 
     Ok(())
 }
 
+fn run_election_test(test_name: &str, config_lpath: &str, summary_lpath: &str) {
+    let test_dir = option_env!("RCV_TEST_DIR").unwrap_or(
+        "/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data",
+    );
+    info!("Running test {}", test_name);
+    run_election(
+        format!("{}/{}/{}", test_dir, test_name, config_lpath),
+        Some(format!("{}/{}/{}", test_dir, test_name, summary_lpath)),
+    )
+    .unwrap();
+}
+
+pub fn test_wrapper(test_name: &str) {
+    run_election_test(
+        test_name,
+        format!("{}_config.json", test_name).as_str(),
+        format!("{}_expected_summary.json", test_name).as_str(),
+    )
+}
+
 // TODO p0 https://github.com/commure/datatest/tree/main/tests
 #[cfg(test)]
 mod tests {
-    use std::fmt::format;
 
-    use super::run_election;
-    use log::info;
-
-    fn run_election_test(test_name: &str, config_lpath: &str, summary_lpath: &str) {
-        let test_dir = option_env!("RCV_TEST_DIR").unwrap_or(
-            "/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data",
-        );
-        info!("Running test {}", test_name);
-        run_election(
-            format!("{}/{}/{}", test_dir, test_name, config_lpath),
-            Some(format!("{}/{}/{}", test_dir, test_name, summary_lpath)),
-        )
-        .unwrap();
-    }
-
-    fn test_wrapper(test_name: &str) {
-        run_election_test(
-            test_name,
-            format!("{}_config.json", test_name).as_str(),
-            format!("{}_expected_summary.json", test_name).as_str(),
-        )
-    }
+    use super::test_wrapper;
 
     #[test]
     #[ignore = "TODO"]
@@ -428,14 +432,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "TODO P1 more permissive input"]
     fn continue_tabulation_test() {
-        // TODO: more permissive in the input
-        run_election_test(
-            "continue_tabulation_test",
-            "continue_tabulation_test_config.json",
-            "continue_tabulation_test_expected_summary.json",
-        )
+        test_wrapper("continue_tabulation_test");
     }
 
     #[test]
@@ -688,6 +687,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "TODO P2 output format is different"]
     fn tiebreak_seed_test() {
         test_wrapper("tiebreak_seed_test");
     }

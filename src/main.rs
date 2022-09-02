@@ -3,6 +3,8 @@ pub mod rcv;
 use env_logger;
 use std::process::ExitCode;
 
+use crate::rcv::test_wrapper;
+
 const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 
 fn main() -> ExitCode {
@@ -12,12 +14,15 @@ fn main() -> ExitCode {
     );
     env_logger::init();
 
-    let r = rcv::run_election("/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data/duplicate_test/duplicate_test_config.json".to_string(),
-     Some("/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data/duplicate_test/duplicate_test_expected_summary.json".to_string()));
+    test_wrapper("tiebreak_use_permutation_in_config_test");
+    ExitCode::SUCCESS
 
-    if r.is_err() {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    // let r = rcv::run_election("/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data/duplicate_test/duplicate_test_config.json".to_string(),
+    //  Some("/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data/duplicate_test/duplicate_test_expected_summary.json".to_string()));
+
+    // if r.is_err() {
+    //     ExitCode::FAILURE
+    // } else {
+    //     ExitCode::SUCCESS
+    // }
 }

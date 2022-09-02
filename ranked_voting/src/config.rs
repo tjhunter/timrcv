@@ -1,8 +1,51 @@
+// ********* Input data structures ***********
+
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct Vote {
+    pub candidates: Vec<String>,
+    pub count: u64,
+}
+
+// ******** Output data structures *********
+
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct EliminationStats {
+    pub name: String,
+    pub transfers: Vec<(String, u64)>,
+    pub exhausted: u64,
+}
+
+/// Statistics for one round
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct RoundStats {
+    pub round: u32,
+    pub tally: Vec<(String, u64)>,
+    pub tally_results_elected: Vec<String>,
+    pub tally_result_eliminated: Vec<EliminationStats>,
+}
+
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct VotingResult {
+    // TODO: replace by an enumeration: SingleWinner, MultiWinner, NoWinner
+    pub winners: Option<Vec<String>>,
+    pub threshold: u64,
+    pub round_stats: Vec<RoundStats>,
+}
+
+/// Errors that prevent the algorithm from completig successfully.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub enum VotingErrors {
+    EmptyElection,
+    NoConvergence,
+}
+
+// ********* Configuration **********
+
 // The configuration options
 // They follow the configuration options defined here:
 // https://github.com/BrightSpots/rcv/blob/develop/config_file_documentation.txt
 
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Copy)]
 pub enum TieBreakMode {
     // stopCountingAndAsk is not going to be implemented.
     UseCandidateOrder,
@@ -59,20 +102,4 @@ pub struct Candidate {
     pub name: String,
     pub code: Option<String>,
     pub excluded: bool,
-}
-
-#[derive(Eq, PartialEq, Debug, Clone)]
-pub struct EliminationStats {
-    pub name: String,
-    pub transfers: Vec<(String, u64)>,
-    pub exhausted: u64,
-}
-
-/// Statistics for one round
-#[derive(Eq, PartialEq, Debug, Clone)]
-pub struct RoundStats {
-    pub round: u32,
-    pub tally: Vec<(String, u64)>,
-    pub tally_results_elected: Vec<String>,
-    pub tally_result_eliminated: Vec<EliminationStats>,
 }

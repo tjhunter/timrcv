@@ -9,33 +9,11 @@ use std::{
 
 pub use crate::config::*;
 
-// Public structures
-
-#[derive(Eq, PartialEq, Debug, Clone)]
-pub struct Vote {
-    pub candidates: Vec<String>,
-    pub count: u64,
-}
-
-#[derive(Eq, PartialEq, Debug, Clone)]
-pub struct VotingResult {
-    // TODO: replace by an enumeration: SingleWinner, MultiWinner, NoWinner
-    pub winners: Option<Vec<String>>,
-    pub threshold: u64,
-    pub round_stats: Vec<RoundStats>,
-}
-
-#[derive(Eq, PartialEq, Debug, Clone)]
-pub enum VotingErrors {
-    EmptyElection,
-    NoConvergence,
-}
-
 // **** Private structures ****
 
 type RoundId = u32;
 
-#[derive(Eq, PartialEq, Debug, Clone, Copy, Hash)]
+#[derive(Eq, PartialEq, Debug, Clone, Copy, Hash, Ord, PartialOrd)]
 struct CandidateId(u32);
 
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
@@ -164,8 +142,8 @@ pub fn run_voting_stats(
 
     // TODO: better management of the number of iterations
     while cur_stats.iter().len() < 10000 {
-        let round_id = cur_stats.iter().len() + 1;
-        let round_res = run_one_round(&cur_votes, &rules)?;
+        let round_id = (cur_stats.iter().len() + 1) as u32;
+        let round_res = run_one_round(&cur_votes, &rules, &all_candidates, round_id)?;
         let stats = round_res.stats.clone();
         info!("Round id: {:?} stats: {:?}", round_id, round_res.stats);
         cur_votes = round_res.votes;
@@ -274,6 +252,8 @@ fn round_result_to_stat(
 fn run_one_round(
     votes: &Vec<VoteInternal>,
     rules: &config::VoteRules,
+    candidate_names: &Vec<(String, CandidateId)>,
+    num_round: u32,
 ) -> Result<RoundResult, VotingErrors> {
     let tally: HashMap<CandidateId, VoteCount> =
         votes.iter().fold(HashMap::new(), |mut acc, va| {
@@ -283,33 +263,20 @@ fn run_one_round(
 
     debug!("tally: {:?}", tally);
 
-    let min_count: VoteCount = {
-        match tally.values().min() {
+    // Find the candidates to eliminate
+    let eliminated_candidates: HashSet<CandidateId> =
+        match find_eliminated_candidates(&tally, rules.tiebreak_mode, candidate_names, num_round) {
+            Some(v) => v.iter().cloned().collect(),
             None => {
-                // TODO: no min values => empty? it should not happen, really
-                return Ok(RoundResult {
-                    votes: Vec::new(),
-                    stats: Vec::new(),
-                });
+                // No candidate to eliminate.
+                // TODO check the conditions for this to happen.
+                unimplemented!("No candidate to eliminate");
             }
-            Some(c) => *c,
-        }
-    };
+        };
 
-    let all_smallest: Vec<CandidateId> = tally
-        .iter()
-        .filter_map(|(cid, vc)| if *vc <= min_count { Some(cid) } else { None })
-        .cloned()
-        .collect();
-    debug!("all_smallest: {:?}", all_smallest);
-    assert!(all_smallest.iter().count() > 0);
+    // // TODO strategy to pick the winning candidates
 
-    // TODO strategy to pick the winning candidates
-
-    // TODO the strategy to pick the candidates to eliminate.
-    // For now, it is simply all the candidates with the smallest number of votes
-
-    let eliminated_candidates: HashSet<CandidateId> = all_smallest.iter().cloned().collect();
+    assert!(eliminated_candidates.len() > 0, "No candidate eliminated");
 
     // Statistics about transfers:
     // For every eliminated candidates, keep the vote transfer, or the exhausted vote.
@@ -402,10 +369,92 @@ fn run_one_round(
     });
 }
 
+// Elimination method.
+fn find_eliminated_candidates(
+    tally: &HashMap<CandidateId, VoteCount>,
+    tiebreak: TieBreakMode,
+    candidate_names: &Vec<(String, CandidateId)>,
+    num_round: u32,
+) -> Option<Vec<CandidateId>> {
+    // TODO should be a programming error
+    if tally.is_empty() {
+        return None;
+    }
+
+    // Only one candidate left, it is the winner by default.
+    // No need to eliminate candidates.
+    if tally.len() == 1 {
+        debug!(
+            "Only one candidate left in tally, no one to eliminate: {:?}",
+            tally
+        );
+        return None;
+    }
+    assert!(tally.len() >= 2);
+
+    let min_count: VoteCount = *tally.values().min().unwrap();
+
+    let all_smallest: Vec<CandidateId> = tally
+        .iter()
+        .filter_map(|(cid, vc)| if *vc <= min_count { Some(cid) } else { None })
+        .cloned()
+        .collect();
+    debug!("all_smallest: {:?}", all_smallest);
+    assert!(all_smallest.iter().count() > 0);
+
+    // Look at the tiebreak mode:
+    let mut sorted_candidates: Vec<CandidateId> = match tiebreak {
+        TieBreakMode::UseCandidateOrder => {
+            let candidate_order: HashMap<CandidateId, usize> = candidate_names
+                .iter()
+                .enumerate()
+                .map(|(idx, (_, cid))| (*cid, idx))
+                .collect();
+            let mut res = all_smallest.clone();
+            res.sort_by_key(|cid| candidate_order.get(cid).unwrap());
+            res
+        }
+        TieBreakMode::Random(seed) => {
+            let cand_with_names: Vec<(CandidateId, String)> = all_smallest
+                .iter()
+                .map(|cid| {
+                    let m: Option<(CandidateId, String)> = candidate_names
+                        .iter()
+                        .filter_map(|(n, cid2)| {
+                            if cid == cid2 {
+                                Some((*cid2, n.clone()))
+                            } else {
+                                None
+                            }
+                        })
+                        .next();
+                    m.unwrap()
+                })
+                // Just take the top one
+                .next()
+                .iter()
+                .cloned()
+                .collect();
+            candidate_permutation_crypto(&cand_with_names, seed, num_round)
+        }
+    };
+
+    // Temp copy
+    let sc = sorted_candidates.clone();
+
+    // We are currently proceeding to remove all the candidates. Do not remove the last one.
+    if sc.len() == tally.len() {
+        let last = sc.last().unwrap();
+        sorted_candidates.retain(|cid| cid != last);
+    }
+    Some(sorted_candidates)
+}
+
+// Candidates are returned in the same order.
 fn checks(
     coll: &Vec<Vote>,
     reg_candidates: &Option<Vec<config::Candidate>>,
-) -> Result<(Vec<VoteInternal>, HashMap<String, CandidateId>), VotingErrors> {
+) -> Result<(Vec<VoteInternal>, Vec<(String, CandidateId)>), VotingErrors> {
     debug!("checks: coll size: {:?}", coll.iter().count());
     let blacklisted_candidates: HashSet<String> = reg_candidates
         .clone()
@@ -463,5 +512,36 @@ fn checks(
         vas.iter().count(),
         candidates.iter().count()
     );
-    Ok((vas, candidates))
+    let ordered_candidates: Vec<(String, CandidateId)> = match reg_candidates {
+        None => {
+            // We use the candidates who have been discovered.
+            // The order is the one of the ids.
+            let mut res: Vec<(String, CandidateId)> = candidates
+                .iter()
+                .map(|(n, cid)| (n.clone(), *cid))
+                .collect();
+            res.sort_by_key(|(_, cid)| *cid);
+            res
+        }
+        Some(rc) => rc
+            .iter()
+            .filter_map(|c| candidates.get(&c.name).map(|cid| (c.name.clone(), *cid)))
+            .collect(),
+    };
+    Ok((vas, ordered_candidates))
+}
+
+/// Generates a "random" permutation of the candidates. Random in this context means hard to guess in advance.
+/// This uses a cryptographic algorithm that is resilient to collisions.
+fn candidate_permutation_crypto(
+    candidates: &Vec<(CandidateId, String)>,
+    seed: u32,
+    num_round: u32,
+) -> Vec<CandidateId> {
+    let mut data: Vec<(CandidateId, String)> = candidates
+        .iter()
+        .map(|(cid, name)| (*cid, format!("{:08}{:08}{}", seed, num_round, name)))
+        .collect();
+    data.sort_by_key(|p| p.1.clone());
+    data.iter().map(|p| p.0).collect()
 }
