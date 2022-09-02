@@ -1,6 +1,5 @@
 pub mod rcv;
 
-use env_logger;
 use std::process::ExitCode;
 
 use crate::rcv::test_wrapper;

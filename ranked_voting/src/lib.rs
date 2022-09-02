@@ -120,31 +120,33 @@ pub fn run_voting_stats(
 ) -> Result<VotingResult, VotingErrors> {
     info!(
         "Processing {:?} votes, candidates: {:?}, rules: {:?}",
-        coll.iter().count(),
+        coll.len(),
         candidates,
         rules
     );
 
-    let (stats, all_candidates) = checks(coll, candidates)?;
+    let cr: CheckResult = checks(coll, candidates)?;
+    let checked_votes = cr.votes;
+    let all_candidates = cr.candidates;
     info!(
         "Processing {:?} aggregated votes, candidates: {:?}",
-        stats.iter().count(),
+        checked_votes.len(),
         all_candidates
     );
 
     let mut initial_count: VoteCount = VoteCount::EMPTY;
-    for v in stats.iter() {
+    for v in checked_votes.iter() {
         initial_count += v.count;
     }
 
-    let mut cur_votes: Vec<VoteInternal> = stats.clone();
+    let mut cur_votes: Vec<VoteInternal> = checked_votes;
     let mut cur_stats: Vec<Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>> =
         Vec::new();
 
     // TODO: better management of the number of iterations
     while cur_stats.iter().len() < 10000 {
         let round_id = (cur_stats.iter().len() + 1) as u32;
-        let round_res = run_one_round(&cur_votes, &rules, &all_candidates, round_id)?;
+        let round_res = run_one_round(&cur_votes, rules, &all_candidates, round_id)?;
         let stats = round_res.stats.clone();
         info!("Round id: {:?} stats: {:?}", round_id, round_res.stats);
         cur_votes = round_res.votes;
@@ -153,7 +155,7 @@ pub fn run_voting_stats(
         // Check end. For now, simply check that we have a winner.
         // TODO check that everyone is a winner or eliminated.
 
-        assert!(stats.clone().len() > 0);
+        assert!(!stats.is_empty());
         let winners: Vec<CandidateId> = stats
             .iter()
             .filter_map(|(cid, _, s)| match s {
@@ -165,7 +167,7 @@ pub fn run_voting_stats(
             // We are done, stop here.
             let candidates_by_id: HashMap<CandidateId, String> = all_candidates
                 .iter()
-                .map(|(cname, cid)| (cid.clone(), cname.clone()))
+                .map(|(cname, cid)| (*cid, cname.clone()))
                 .collect();
             let stats = round_results_to_stats(&cur_stats, &candidates_by_id)?;
             let mut winner_names: Vec<String> = Vec::new();
@@ -193,7 +195,7 @@ fn get_threshold(tally: &HashMap<CandidateId, VoteCount>) -> VoteCount {
 }
 
 fn round_results_to_stats(
-    results: &Vec<Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>>,
+    results: &[Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>],
     candidates_by_id: &HashMap<CandidateId, String>,
 ) -> Result<Vec<RoundStats>, VotingErrors> {
     let mut res: Vec<RoundStats> = Vec::new();
@@ -205,7 +207,7 @@ fn round_results_to_stats(
 }
 
 fn round_result_to_stat(
-    stats: &Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>,
+    stats: &[(CandidateId, VoteCount, RoundCandidateStatusInternal)],
     round_id: RoundId,
     candidates_by_id: &HashMap<CandidateId, String>,
 ) -> Result<RoundStats, VotingErrors> {
@@ -216,10 +218,10 @@ fn round_result_to_stat(
         tally_result_eliminated: Vec::new(),
     };
 
-    for (cid, c, status) in stats.clone() {
+    for (cid, c, status) in stats {
         let name: &String = candidates_by_id
-            .get(&cid)
-            .ok_or_else(|| (VotingErrors::EmptyElection))?; // TODO: wrong error
+            .get(cid)
+            .ok_or(VotingErrors::EmptyElection)?; // TODO: wrong error
         rs.tally.push((name.clone(), c.0));
         match status {
             RoundCandidateStatusInternal::StillRunning => {
@@ -232,8 +234,8 @@ fn round_result_to_stat(
                 let mut pub_transfers: Vec<(String, u64)> = Vec::new();
                 for (t_cid, t_count) in transfers {
                     let t_name: &String = candidates_by_id
-                        .get(&t_cid)
-                        .ok_or_else(|| (VotingErrors::EmptyElection))?; // TODO: wrong error
+                        .get(t_cid)
+                        .ok_or(VotingErrors::EmptyElection)?; // TODO: wrong error
                     pub_transfers.push((t_name.clone(), t_count.0));
                 }
                 rs.tally_result_eliminated.push(config::EliminationStats {
@@ -249,9 +251,9 @@ fn round_result_to_stat(
 
 /// Returns the removed candidates, and the remaining votes
 fn run_one_round(
-    votes: &Vec<VoteInternal>,
+    votes: &[VoteInternal],
     rules: &config::VoteRules,
-    candidate_names: &Vec<(String, CandidateId)>,
+    candidate_names: &[(String, CandidateId)],
     num_round: u32,
 ) -> Result<RoundResult, VotingErrors> {
     let tally: HashMap<CandidateId, VoteCount> =
@@ -273,12 +275,12 @@ fn run_one_round(
             tally
         );
         return Ok(RoundResult {
-            votes: votes.clone(),
+            votes: votes.to_vec(),
             stats: tally
                 .iter()
                 .map(|(cid, count)| (*cid, *count, RoundCandidateStatusInternal::Elected))
                 .collect(),
-            vote_threshold: vote_threshold,
+            vote_threshold,
         });
     }
 
@@ -299,7 +301,7 @@ fn run_one_round(
 
     // TODO strategy to pick the winning candidates
 
-    assert!(eliminated_candidates.len() > 0, "No candidate eliminated");
+    assert!(!eliminated_candidates.is_empty(), "No candidate eliminated");
     debug!("run_one_round: tiebreak situation: {:?}", resolved_tiebreak);
 
     // Statistics about transfers:
@@ -307,7 +309,7 @@ fn run_one_round(
     let mut elimination_stats: HashMap<CandidateId, (HashMap<CandidateId, VoteCount>, VoteCount)> =
         eliminated_candidates
             .iter()
-            .map(|cid| (cid.clone(), (HashMap::new(), VoteCount::EMPTY)))
+            .map(|cid| (*cid, (HashMap::new(), VoteCount::EMPTY)))
             .collect();
 
     // Filter the rest of the votes to simply keep the votes that still matter
@@ -357,7 +359,7 @@ fn run_one_round(
             if eliminated_candidates.contains(cid) {
                 None
             } else {
-                Some((cid.clone(), vc.clone()))
+                Some((*cid, *vc))
             }
         })
         .collect();
@@ -397,11 +399,11 @@ fn run_one_round(
         }
     }
 
-    return Ok(RoundResult {
+    Ok(RoundResult {
         votes: rem_votes,
         stats: round_stats,
-        vote_threshold: vote_threshold,
-    });
+        vote_threshold,
+    })
 }
 
 // Flag to indicate if a tiebreak happened.
@@ -416,7 +418,7 @@ enum TiebreakSituation {
 fn find_eliminated_candidates(
     tally: &HashMap<CandidateId, VoteCount>,
     tiebreak: TieBreakMode,
-    candidate_names: &Vec<(String, CandidateId)>,
+    candidate_names: &[(String, CandidateId)],
     num_round: u32,
 ) -> Option<(Vec<CandidateId>, TiebreakSituation)> {
     // TODO should be a programming error
@@ -443,7 +445,7 @@ fn find_eliminated_candidates(
         .cloned()
         .collect();
     debug!("all_smallest: {:?}", all_smallest);
-    assert!(all_smallest.iter().count() > 0);
+    assert!(!all_smallest.is_empty());
 
     // No tiebreak, the logic below is not relevant.
     if all_smallest.len() == 1 {
@@ -458,7 +460,7 @@ fn find_eliminated_candidates(
                 .enumerate()
                 .map(|(idx, (_, cid))| (*cid, idx))
                 .collect();
-            let mut res = all_smallest.clone();
+            let mut res = all_smallest;
             res.sort_by_key(|cid| candidate_order.get(cid).unwrap());
             // For loser selection, the selection is done in reverse order according to the reference implementation.
             res.reverse();
@@ -506,15 +508,20 @@ fn find_eliminated_candidates(
     Some((sorted_candidates, TiebreakSituation::TiebreakOccured))
 }
 
+struct CheckResult {
+    votes: Vec<VoteInternal>,
+    candidates: Vec<(String, CandidateId)>,
+}
+
 // Candidates are returned in the same order.
 fn checks(
-    coll: &Vec<Vote>,
+    coll: &[Vote],
     reg_candidates: &Option<Vec<config::Candidate>>,
-) -> Result<(Vec<VoteInternal>, Vec<(String, CandidateId)>), VotingErrors> {
-    debug!("checks: coll size: {:?}", coll.iter().count());
+) -> Result<CheckResult, VotingErrors> {
+    debug!("checks: coll size: {:?}", coll.len());
     let blacklisted_candidates: HashSet<String> = reg_candidates
         .clone()
-        .unwrap_or(Vec::new())
+        .unwrap_or_default()
         .iter()
         .filter_map(|c| {
             if c.excluded {
@@ -536,21 +543,18 @@ fn checks(
                     if blacklisted_candidates.contains(c) {
                         None
                     } else {
-                        let cid: CandidateId = candidates
-                            .entry(c.clone())
-                            .or_insert_with(|| {
-                                counter += 1;
-                                CandidateId(counter)
-                            })
-                            .clone();
+                        let cid: CandidateId = *candidates.entry(c.clone()).or_insert_with(|| {
+                            counter += 1;
+                            CandidateId(counter)
+                        });
                         Some(cid)
                     }
                 })
                 .collect();
             let randked_choice = match &cs[..] {
                 [first, rest @ ..] => RankedChoice {
-                    first: first.clone(),
-                    rest: rest.iter().cloned().collect(),
+                    first: *first,
+                    rest: rest.to_vec(),
                 },
                 _ => {
                     unimplemented!("bad vote. not implemented {:?}", v);
@@ -565,8 +569,8 @@ fn checks(
         .collect();
     debug!(
         "checks: vote aggs size: {:?}  candidates: {:?}",
-        vas.iter().count(),
-        candidates.iter().count()
+        vas.len(),
+        candidates.len()
     );
     let ordered_candidates: Vec<(String, CandidateId)> = match reg_candidates {
         None => {
@@ -584,13 +588,16 @@ fn checks(
             .filter_map(|c| candidates.get(&c.name).map(|cid| (c.name.clone(), *cid)))
             .collect(),
     };
-    Ok((vas, ordered_candidates))
+    Ok(CheckResult {
+        votes: vas,
+        candidates: ordered_candidates,
+    })
 }
 
 /// Generates a "random" permutation of the candidates. Random in this context means hard to guess in advance.
 /// This uses a cryptographic algorithm that is resilient to collisions.
 fn candidate_permutation_crypto(
-    candidates: &Vec<(CandidateId, String)>,
+    candidates: &[(CandidateId, String)],
     seed: u32,
     num_round: u32,
 ) -> Vec<CandidateId> {

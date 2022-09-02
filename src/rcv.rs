@@ -164,7 +164,9 @@ fn read_js_int(x: &Option<JSValue>) -> AHResult<usize> {
             Some(y) => Ok(y as usize),
             None => Err(anyhow!("not a number {:?}", x)),
         },
-        Some(JSValue::String(s)) => s.parse::<usize>().or(Err(anyhow!("not a number {:?}", x))),
+        Some(JSValue::String(s)) => s
+            .parse::<usize>()
+            .map_err(|e| anyhow!("not a number {:?}: {:?}", x, e)),
         _ => Err(anyhow!("not a number {:?}", x)),
     }
 }
@@ -317,7 +319,7 @@ pub fn run_election(config_path: String, check_summary_path: Option<String>) -> 
 
     let root_p = config_p
         .parent()
-        .ok_or(anyhow!("No parent for directory {:?}", config_p))?;
+        .ok_or_else(|| anyhow!("No parent for directory {:?}", config_p))?;
     let mut data: Vec<Vote> = Vec::new();
     for cfs in config.cvr_file_sources {
         let mut file_data =
