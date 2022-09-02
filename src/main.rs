@@ -4,6 +4,21 @@ use std::process::ExitCode;
 
 use crate::rcv::test_wrapper;
 
+use clap::Parser;
+
+/// This is a ranked voting tabulation program.
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct Args {
+    /// First argument
+    #[clap(short, long, value_parser)]
+    name: Option<String>,
+
+    /// Number of times to greet
+    #[clap(short, long, value_parser, default_value_t = 1)]
+    count: u8,
+}
+
 const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 
 fn main() -> ExitCode {
@@ -13,7 +28,13 @@ fn main() -> ExitCode {
     );
     env_logger::init();
 
-    test_wrapper("duplicate_test");
+    let args = Args::parse();
+
+    for _ in 0..args.count {
+        println!("Hello {:?}!", args.name)
+    }
+
+    test_wrapper("2013_minneapolis_mayor_scale");
     ExitCode::SUCCESS
 
     // let r = rcv::run_election("/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data/duplicate_test/duplicate_test_config.json".to_string(),

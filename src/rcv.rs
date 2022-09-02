@@ -1,6 +1,7 @@
 use log::{debug, info, warn};
 
 use ranked_voting::*;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -107,6 +108,15 @@ struct RcvConfig {
     rules: RcvRules,
 }
 
+// All the possible choices that can be made on a ballot
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+enum BallotChoice {
+    Candidate(String),
+    UndeclaredWriteIn(String),
+    Overvote,
+    Undervote,
+}
+
 fn result_stats_to_json(rs: &VotingResult) -> Vec<JSValue> {
     let mut l: Vec<JSValue> = Vec::new();
     let num_rounds = rs.round_stats.len();
@@ -171,7 +181,77 @@ fn read_js_int(x: &Option<JSValue>) -> AHResult<usize> {
     }
 }
 
-fn read_excel_file(path: String, _cfs: &FileSource) -> AHResult<Vec<ranked_voting::Vote>> {
+fn read_choice_calamine(
+    cell: &calamine::DataType,
+    candidates: &HashSet<String>,
+    source_setting: &FileSource,
+) -> AHResult<BallotChoice> {
+    match cell {
+        calamine::DataType::String(s) if candidates.contains(s) => {
+            Ok(BallotChoice::Candidate(s.clone()))
+        }
+        calamine::DataType::String(s) if s == "UWI" => {
+            Ok(BallotChoice::UndeclaredWriteIn("".to_string()))
+        }
+        calamine::DataType::String(s)
+            if s.is_empty()
+                && source_setting
+                    .treat_blank_as_undeclared_write_in
+                    .unwrap_or(false) =>
+        {
+            Ok(BallotChoice::UndeclaredWriteIn("".to_string()))
+        }
+        calamine::DataType::String(s) if source_setting.undervote_label == Some(s.clone()) => {
+            Ok(BallotChoice::Undervote)
+        }
+        calamine::DataType::String(s) => {
+            if let Some(delim) = source_setting.overvote_delimiter.clone() {
+                if s.contains(&delim) {
+                    return Ok(BallotChoice::Overvote);
+                }
+            }
+            Err(anyhow!("Wrong data type: {:?}", s))
+        }
+        calamine::DataType::Empty => Ok(BallotChoice::Undervote),
+        _ => Err(anyhow!("")),
+    }
+}
+
+// TODO: add policy on how to treat the bad ballots.
+fn create_vote(
+    ballot_id: &String,
+    count: u64,
+    choices: &[BallotChoice],
+    _rules: &RcvRules,
+) -> AHResult<Option<Vote>> {
+    let mut candidates: Vec<String> = Vec::new();
+    // For now, be very permissive.
+    for c in choices {
+        match c {
+            BallotChoice::Candidate(s) => {
+                candidates.push(s.clone());
+            }
+            BallotChoice::UndeclaredWriteIn(_) => {
+                // TODO: this is hardcoded.
+                candidates.push("UWI".to_string());
+            }
+            _ => {
+                warn!(
+                    "create_vote: ballot_id {}: skipping choice {:?}",
+                    ballot_id, c
+                );
+            }
+        }
+    }
+    Ok(Some(Vote { candidates, count }))
+}
+
+fn read_excel_file(
+    path: String,
+    cfs: &FileSource,
+    candidates: &[RcvCandidate],
+    rules: &RcvRules,
+) -> AHResult<Vec<ranked_voting::Vote>> {
     let mut workbook: Xlsx<_> = open_workbook(path)?;
     let wrange = workbook
         .worksheet_range_at(0)
@@ -181,13 +261,15 @@ fn read_excel_file(path: String, _cfs: &FileSource) -> AHResult<Vec<ranked_votin
         .next()
         .ok_or(CError::Msg("Missing first row"))?;
     debug!("header: {:?}", header);
-    let start_range: usize = match read_js_int(&_cfs.first_vote_column_index) {
+    let start_range: usize = match read_js_int(&cfs.first_vote_column_index) {
         Result::Ok(x) if x >= 1 => (x - 1) as usize,
         _ => unimplemented!(
             "failed to find start range {:?}",
-            _cfs.first_vote_column_index
+            cfs.first_vote_column_index
         ),
     };
+
+    let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
 
     let mut iter = wrange.rows();
     // TODO check for correctness
@@ -197,19 +279,10 @@ fn read_excel_file(path: String, _cfs: &FileSource) -> AHResult<Vec<ranked_votin
         debug!("workbook: {:?}", row);
         // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
         let choices = &row[start_range..];
-        let mut cs: Vec<String> = Vec::new();
+        let mut cs: Vec<BallotChoice> = Vec::new();
         for elt in choices {
-            match elt {
-                // TODO: check for all the undervotes, overvotes, etc.
-                calamine::DataType::String(s) => {
-                    cs.push(s.clone());
-                }
-                // Undervote
-                calamine::DataType::Empty => {}
-                _ => {
-                    return Err(anyhow!(CError::Msg("wrong type")));
-                }
-            }
+            let bc = read_choice_calamine(elt, &candidate_names, cfs)?;
+            cs.push(bc)
         }
         // TODO implement count
         let count: u64 = match None {
@@ -220,20 +293,24 @@ fn read_excel_file(path: String, _cfs: &FileSource) -> AHResult<Vec<ranked_votin
             }
             None => 1,
         };
-        res.push(Vote {
-            candidates: cs.clone(),
-            count,
-        });
+        if let Some(v) = create_vote(&"NO ID".to_string(), count, &cs, rules)? {
+            res.push(v);
+        }
     }
     Ok(res)
 }
 
-fn read_ranking_data(root_path: String, cfs: &FileSource) -> AHResult<Vec<ranked_voting::Vote>> {
+fn read_ranking_data(
+    root_path: String,
+    cfs: &FileSource,
+    candidates: &[RcvCandidate],
+    rules: &RcvRules,
+) -> AHResult<Vec<ranked_voting::Vote>> {
     let p: PathBuf = [root_path, cfs.file_path.clone()].iter().collect();
     let p2 = p.as_path().display().to_string();
     info!("Attempting to read rank file {:?}", p2);
     match cfs.provider.as_str() {
-        "ess" => read_excel_file(p2, cfs),
+        "ess" => read_excel_file(p2, cfs, candidates, rules),
         x => unimplemented!("Provider not implemented {:?}", x),
     }
 }
@@ -322,8 +399,12 @@ pub fn run_election(config_path: String, check_summary_path: Option<String>) -> 
         .ok_or_else(|| anyhow!("No parent for directory {:?}", config_p))?;
     let mut data: Vec<Vote> = Vec::new();
     for cfs in config.cvr_file_sources {
-        let mut file_data =
-            read_ranking_data(root_p.as_os_str().to_str().unwrap().to_string(), &cfs)?;
+        let mut file_data = read_ranking_data(
+            root_p.as_os_str().to_str().unwrap().to_string(),
+            &cfs,
+            &config.candidates,
+            &config.rules,
+        )?;
         data.append(&mut file_data);
     }
 
@@ -591,7 +672,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO P0"]
     fn skip_to_next_test() {
         test_wrapper("skip_to_next_test");
     }
@@ -669,7 +749,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO P0"]
     fn test_set_overvote_delimiter() {
         test_wrapper("test_set_overvote_delimiter");
     }
