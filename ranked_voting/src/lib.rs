@@ -102,6 +102,8 @@ enum RoundCandidateStatusInternal {
 struct RoundResult {
     votes: Vec<VoteInternal>,
     stats: Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>,
+    // Winning vote threshold
+    vote_threshold: VoteCount,
 }
 
 /// Runs the voting algorithm with the given rules for the given votes.
@@ -134,7 +136,6 @@ pub fn run_voting_stats(
     for v in stats.iter() {
         initial_count += v.count;
     }
-    let vote_threshold = simple_majority_threshold(initial_count);
 
     let mut cur_votes: Vec<VoteInternal> = stats.clone();
     let mut cur_stats: Vec<Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>> =
@@ -172,7 +173,7 @@ pub fn run_voting_stats(
                 winner_names.push(candidates_by_id.get(&cid).unwrap().clone());
             }
             return Ok(VotingResult {
-                threshold: vote_threshold.0,
+                threshold: round_res.vote_threshold.0,
                 winners: Some(winner_names),
                 round_stats: stats,
             });
@@ -181,16 +182,14 @@ pub fn run_voting_stats(
     Err(VotingErrors::NoConvergence)
 }
 
-fn simple_majority_threshold(total_count: VoteCount) -> VoteCount {
+fn get_threshold(tally: &HashMap<CandidateId, VoteCount>) -> VoteCount {
+    let total_count: VoteCount = tally.values().cloned().sum();
     if total_count == VoteCount::EMPTY {
         VoteCount::EMPTY
     } else {
-        // TODO: unclear why it should be this.
-        VoteCount(total_count.0 / 2)
+        // TODO: this is hardcoding the formula for num_winners = 1, implement the other ones.
+        VoteCount((total_count.0 / 2) + 1)
     }
-    //  else {
-    //     VoteCount(total_count.0 / 2 + 1)
-    // }
 }
 
 fn round_results_to_stats(
@@ -263,10 +262,34 @@ fn run_one_round(
 
     debug!("tally: {:?}", tally);
 
+    let vote_threshold = get_threshold(&tally);
+    debug!("run_one_round: vote_threshold: {:?}", vote_threshold);
+
+    // Only one candidate. It is the winner by any standard.
+    // TODO: improve with multi candidate modes.
+    if tally.len() == 1 {
+        debug!(
+            "run_one_round: only one candidate, directly winning: {:?}",
+            tally
+        );
+        return Ok(RoundResult {
+            votes: votes.clone(),
+            stats: tally
+                .iter()
+                .map(|(cid, count)| (*cid, *count, RoundCandidateStatusInternal::Elected))
+                .collect(),
+            vote_threshold: vote_threshold,
+        });
+    }
+
+    let resolved_tiebreak: TiebreakSituation;
     // Find the candidates to eliminate
     let eliminated_candidates: HashSet<CandidateId> =
         match find_eliminated_candidates(&tally, rules.tiebreak_mode, candidate_names, num_round) {
-            Some(v) => v.iter().cloned().collect(),
+            Some((v, tb)) => {
+                resolved_tiebreak = tb;
+                v.iter().cloned().collect()
+            }
             None => {
                 // No candidate to eliminate.
                 // TODO check the conditions for this to happen.
@@ -274,9 +297,10 @@ fn run_one_round(
             }
         };
 
-    // // TODO strategy to pick the winning candidates
+    // TODO strategy to pick the winning candidates
 
     assert!(eliminated_candidates.len() > 0, "No candidate eliminated");
+    debug!("run_one_round: tiebreak situation: {:?}", resolved_tiebreak);
 
     // Statistics about transfers:
     // For every eliminated candidates, keep the vote transfer, or the exhausted vote.
@@ -337,10 +361,20 @@ fn run_one_round(
             }
         })
         .collect();
+
+    debug!("run_one_round: remainers: {:?}", remainers);
     let mut winners: HashSet<CandidateId> = HashSet::new();
-    if remainers.len() == 1 {
-        for cid in remainers.keys() {
-            winners.insert(*cid);
+    // If a tiebreak was resolved in this round, do not select a winner.
+    // This is just an artifact of the reference implementation.
+    if resolved_tiebreak == TiebreakSituation::Clean {
+        for (&cid, &count) in remainers.iter() {
+            if count >= vote_threshold {
+                debug!(
+                    "run_one_round: {:?} has count {:?}, marking as winner",
+                    cid, count
+                );
+                winners.insert(cid);
+            }
         }
     }
 
@@ -366,7 +400,16 @@ fn run_one_round(
     return Ok(RoundResult {
         votes: rem_votes,
         stats: round_stats,
+        vote_threshold: vote_threshold,
     });
+}
+
+// Flag to indicate if a tiebreak happened.
+
+#[derive(Eq, PartialEq, Debug, Clone, Copy, Hash)]
+enum TiebreakSituation {
+    Clean,           // Did not happen
+    TiebreakOccured, // Happened and had to be resolved.
 }
 
 // Elimination method.
@@ -375,7 +418,7 @@ fn find_eliminated_candidates(
     tiebreak: TieBreakMode,
     candidate_names: &Vec<(String, CandidateId)>,
     num_round: u32,
-) -> Option<Vec<CandidateId>> {
+) -> Option<(Vec<CandidateId>, TiebreakSituation)> {
     // TODO should be a programming error
     if tally.is_empty() {
         return None;
@@ -402,6 +445,11 @@ fn find_eliminated_candidates(
     debug!("all_smallest: {:?}", all_smallest);
     assert!(all_smallest.iter().count() > 0);
 
+    // No tiebreak, the logic below is not relevant.
+    if all_smallest.len() == 1 {
+        return Some((all_smallest, TiebreakSituation::Clean));
+    }
+
     // Look at the tiebreak mode:
     let mut sorted_candidates: Vec<CandidateId> = match tiebreak {
         TieBreakMode::UseCandidateOrder => {
@@ -412,6 +460,9 @@ fn find_eliminated_candidates(
                 .collect();
             let mut res = all_smallest.clone();
             res.sort_by_key(|cid| candidate_order.get(cid).unwrap());
+            // For loser selection, the selection is done in reverse order according to the reference implementation.
+            res.reverse();
+            debug!("sorted candidates in elimination queue using tiebreak mode usecandidateorder: {:?}", res);
             res
         }
         TieBreakMode::Random(seed) => {
@@ -430,24 +481,29 @@ fn find_eliminated_candidates(
                         .next();
                     m.unwrap()
                 })
-                // Just take the top one
-                .next()
-                .iter()
-                .cloned()
                 .collect();
-            candidate_permutation_crypto(&cand_with_names, seed, num_round)
+            let res = candidate_permutation_crypto(&cand_with_names, seed, num_round);
+            debug!(
+                "sorted candidates in elimination queue using tiebreak mode random: {:?}",
+                res
+            );
+            res
         }
     };
 
     // Temp copy
     let sc = sorted_candidates.clone();
 
+    // TODO check that it is accurate to do.
+    // For now, just select a single candidate for removal.
+    sorted_candidates.truncate(1);
+
     // We are currently proceeding to remove all the candidates. Do not remove the last one.
     if sc.len() == tally.len() {
         let last = sc.last().unwrap();
         sorted_candidates.retain(|cid| cid != last);
     }
-    Some(sorted_candidates)
+    Some((sorted_candidates, TiebreakSituation::TiebreakOccured))
 }
 
 // Candidates are returned in the same order.

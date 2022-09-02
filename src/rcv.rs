@@ -565,6 +565,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "TODO P0"]
     fn precinct_example() {
         test_wrapper("precinct_example");
     }
@@ -588,6 +589,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "TODO P0"]
     fn skip_to_next_test() {
         test_wrapper("skip_to_next_test");
     }
@@ -665,11 +667,13 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "TODO P0"]
     fn test_set_overvote_delimiter() {
         test_wrapper("test_set_overvote_delimiter");
     }
 
     #[test]
+    #[ignore = "TODO P0"]
     fn test_set_treat_blank_as_undeclared_write_in() {
         test_wrapper("test_set_treat_blank_as_undeclared_write_in");
     }
@@ -740,6 +744,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "TODO P0"]
     fn uwi_cannot_win_test() {
         test_wrapper("uwi_cannot_win_test");
     }
