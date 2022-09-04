@@ -12,98 +12,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::Map as JSMap;
 use serde_json::Value as JSValue;
+use std::collections::HashSet;
 use text_diff::print_diff;
 
-#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-struct OutputSettings {
-    #[serde(rename = "contestName")]
-    contest_name: String,
-    #[serde(rename = "outputDirectory")]
-    output_directory: Option<String>,
-    #[serde(rename = "contestDate")]
-    contest_date: Option<String>,
-    #[serde(rename = "contestJurisdiction")]
-    contest_juridiction: Option<String>,
-    #[serde(rename = "contestOffice")]
-    contest_office: Option<String>,
-    #[serde(rename = "tabulateByPrecinct")]
-    tabulate_by_precinct: Option<bool>,
-    #[serde(rename = "generateCdfJson")]
-    generate_cdf_json: Option<bool>,
-}
-
-#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-struct OutputConfig {
-    contest: String,
-    date: Option<String>,
-    jurisdiction: Option<String>,
-    office: Option<String>,
-    threshold: Option<String>,
-}
-
-#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-pub struct FileSource {
-    provider: String,
-    #[serde(rename = "filePath")]
-    file_path: String,
-    #[serde(rename = "contestId")]
-    contest_id: Option<String>,
-    #[serde(rename = "firstVoteColumnIndex")]
-    first_vote_column_index: Option<JSValue>,
-    #[serde(rename = "firstVoteRowIndex")]
-    first_vote_row_index: Option<JSValue>,
-    #[serde(rename = "idColumnIndex")]
-    id_column_index: Option<String>,
-    #[serde(rename = "precinctColumnIndex")]
-    precinct_column_index: Option<String>,
-    #[serde(rename = "overvoteDelimiter")]
-    overvote_delimiter: Option<String>,
-    #[serde(rename = "overvoteLabel")]
-    overvote_label: Option<String>,
-    #[serde(rename = "undervoteLabel")]
-    undervote_label: Option<String>,
-    #[serde(rename = "undeclaredWriteInLabel")]
-    undeclared_write_in_label: Option<String>,
-    #[serde(rename = "treatBlankAsUndeclaredWriteIn")]
-    treat_blank_as_undeclared_write_in: Option<bool>,
-}
-
-#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-pub struct RcvCandidate {
-    name: String,
-    code: Option<String>,
-    excluded: Option<bool>,
-}
-
-#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-pub struct RcvRules {
-    #[serde(rename = "tiebreakMode")]
-    tiebreak_mode: String,
-    #[serde(rename = "overvoteRule")]
-    overvote_rule: String,
-    #[serde(rename = "winnerElectionMode")]
-    winner_election_mode: String,
-    #[serde(rename = "randomSeed")]
-    random_seed: Option<String>,
-    #[serde(rename = "maxSkippedRanksAllowed")]
-    max_skipped_ranks_allowed: String,
-    #[serde(rename = "maxRankingsAllowed")]
-    max_rankings_allowed: String,
-    #[serde(rename = "rulesDescription")]
-    rules_description: Option<String>,
-    #[serde(rename = "exhaustOnDuplicateCandidate")]
-    exhaust_on_duplicate_candidate: Option<bool>,
-}
-
-#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-struct RcvConfig {
-    #[serde(rename = "outputSettings")]
-    output_settings: OutputSettings,
-    #[serde(rename = "cvrFileSources")]
-    cvr_file_sources: Vec<FileSource>,
-    candidates: Vec<RcvCandidate>,
-    rules: RcvRules,
-}
+use crate::rcv::config_reader::*;
 
 // All the possible choices that can be made on a ballot
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
@@ -188,30 +100,199 @@ fn result_stats_to_json(rs: &VotingResult) -> Vec<JSValue> {
     l
 }
 
-fn read_summary(path: String) -> RcvResult<JSValue> {
-    let contents = fs::read_to_string(path).context(OpeningJsonSnafu {})?;
-    debug!("read content: {:?}", contents);
-    let js: JSValue = serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?;
-    debug!("read content: {:?}", js["results"].as_array().unwrap());
-    Ok(js)
+pub mod config_reader {
+    use crate::rcv::*;
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    pub struct OutputSettings {
+        #[serde(rename = "contestName")]
+        pub contest_name: String,
+        #[serde(rename = "outputDirectory")]
+        pub output_directory: Option<String>,
+        #[serde(rename = "contestDate")]
+        pub contest_date: Option<String>,
+        #[serde(rename = "contestJurisdiction")]
+        pub contest_juridiction: Option<String>,
+        #[serde(rename = "contestOffice")]
+        pub contest_office: Option<String>,
+        #[serde(rename = "tabulateByPrecinct")]
+        pub tabulate_by_precinct: Option<bool>,
+        #[serde(rename = "generateCdfJson")]
+        pub generate_cdf_json: Option<bool>,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    pub struct OutputConfig {
+        pub contest: String,
+        pub date: Option<String>,
+        pub jurisdiction: Option<String>,
+        pub office: Option<String>,
+        pub threshold: Option<String>,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    pub struct FileSource {
+        pub provider: String,
+        #[serde(rename = "filePath")]
+        pub file_path: String,
+        #[serde(rename = "contestId")]
+        pub contest_id: Option<String>,
+        #[serde(rename = "firstVoteColumnIndex")]
+        _first_vote_column_index: Option<JSValue>,
+        #[serde(rename = "firstVoteRowIndex")]
+        pub first_vote_row_index: Option<JSValue>,
+        #[serde(rename = "idColumnIndex")]
+        pub id_column_index: Option<String>,
+        #[serde(rename = "precinctColumnIndex")]
+        pub precinct_column_index: Option<String>,
+        #[serde(rename = "overvoteDelimiter")]
+        pub overvote_delimiter: Option<String>,
+        #[serde(rename = "overvoteLabel")]
+        pub overvote_label: Option<String>,
+        #[serde(rename = "undervoteLabel")]
+        pub undervote_label: Option<String>,
+        #[serde(rename = "undeclaredWriteInLabel")]
+        pub undeclared_write_in_label: Option<String>,
+        #[serde(rename = "treatBlankAsUndeclaredWriteIn")]
+        pub treat_blank_as_undeclared_write_in: Option<bool>,
+    }
+
+    impl FileSource {
+        pub fn first_vote_column_index(&self) -> RcvResult<usize> {
+            let x = read_js_int(&self._first_vote_column_index)?;
+            Ok(x - 1)
+        }
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    pub struct RcvCandidate {
+        pub name: String,
+        pub code: Option<String>,
+        pub excluded: Option<bool>,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    pub struct RcvRules {
+        #[serde(rename = "tiebreakMode")]
+        pub tiebreak_mode: String,
+        #[serde(rename = "overvoteRule")]
+        pub overvote_rule: String,
+        #[serde(rename = "winnerElectionMode")]
+        pub winner_election_mode: String,
+        #[serde(rename = "randomSeed")]
+        pub random_seed: Option<String>,
+        #[serde(rename = "maxSkippedRanksAllowed")]
+        pub max_skipped_ranks_allowed: String,
+        #[serde(rename = "maxRankingsAllowed")]
+        pub max_rankings_allowed: String,
+        #[serde(rename = "rulesDescription")]
+        pub rules_description: Option<String>,
+        #[serde(rename = "exhaustOnDuplicateCandidate")]
+        pub exhaust_on_duplicate_candidate: Option<bool>,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    pub struct RcvConfig {
+        #[serde(rename = "outputSettings")]
+        pub output_settings: OutputSettings,
+        #[serde(rename = "cvrFileSources")]
+        pub cvr_file_sources: Vec<FileSource>,
+        pub candidates: Vec<RcvCandidate>,
+        pub rules: RcvRules,
+    }
+
+    pub fn read_summary(path: String) -> RcvResult<JSValue> {
+        let contents = fs::read_to_string(path).context(OpeningJsonSnafu {})?;
+        debug!("read content: {:?}", contents);
+        let js: JSValue = serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?;
+        debug!("read content: {:?}", js["results"].as_array().unwrap());
+        Ok(js)
+    }
+
+    fn read_js_int(x: &Option<JSValue>) -> RcvResult<usize> {
+        match x {
+            Some(JSValue::Number(n)) => n
+                .as_u64()
+                .map(|x| x as usize)
+                .context(ParsingJsonNumberSnafu {}),
+            Some(JSValue::String(s)) => s.parse::<usize>().ok().context(ParsingJsonNumberSnafu {}),
+            _ => None.context(ParsingJsonNumberSnafu {}),
+        }
+    }
 }
 
-fn read_js_int(x: &Option<JSValue>) -> RcvResult<usize> {
-    match x {
-        Some(JSValue::Number(n)) => n
-            .as_u64()
-            .map(|x| x as usize)
-            .context(ParsingJsonNumberSnafu {}),
-        Some(JSValue::String(s)) => s.parse::<usize>().ok().context(ParsingJsonNumberSnafu {}),
-        _ => None.context(ParsingJsonNumberSnafu {}),
-    }
+/// A ballot, as parsed by the readers
+/// This is before applying rules for undervote, blanks, etc.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct ParsedBallot {
+    // TODO: add precinct
+    // TODO: add filename?
+    pub id: Option<String>,
+    pub count: Option<u64>,
+    pub choices: Vec<String>,
 }
 
 pub mod ess_reader {
     use crate::rcv::*;
     use std::collections::HashSet;
 
-    pub fn read_excel_file(
+    pub fn read_excel_file(path: String, cfs: &FileSource) -> RcvResult<Vec<ParsedBallot>> {
+        let p = path.clone();
+        let mut workbook: Xlsx<_> =
+            open_workbook(p).context(OpeningExcelSnafu { path: path.clone() })?;
+        let wrange = workbook
+            .worksheet_range_at(0)
+            .context(EmptyExcelSnafu {})?
+            .context(OpeningExcelSnafu { path })?;
+
+        // .ok_or(CError::Msg("Missing first sheet"))??;
+        let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
+        debug!("header: {:?}", header);
+        let start_range = cfs.first_vote_column_index()?;
+
+        let mut iter = wrange.rows();
+        // TODO check for correctness
+        iter.next();
+        let mut res: Vec<ParsedBallot> = Vec::new();
+        for row in iter {
+            debug!("workbook: {:?}", row);
+            // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
+            let choices = &row[start_range..];
+            let mut cs: Vec<String> = Vec::new();
+            for elt in choices {
+                let bc = read_choice_calamine2(elt)?;
+                cs.push(bc)
+            }
+            // TODO implement count
+            let count: u64 = match None {
+                Some(calamine::DataType::Float(f)) => f as u64,
+                Some(calamine::DataType::Int(i)) => i as u64,
+                Some(_) => {
+                    whatever!("wrong type")
+                }
+                None => 1,
+            };
+            res.push(ParsedBallot {
+                id: None,
+                count: Some(count),
+                choices: cs,
+            });
+        }
+        Ok(res)
+    }
+
+    fn read_choice_calamine2(cell: &calamine::DataType) -> RcvResult<String> {
+        match cell {
+            calamine::DataType::String(s) => Ok(s.clone()),
+            calamine::DataType::Empty => Ok("".to_string()),
+            _ => whatever!(
+                "TODO MSG:read_choice_calamine: could not understand cell {:?}",
+                cell
+            ),
+        }
+    }
+
+    pub fn read_excel_file0(
         path: String,
         cfs: &FileSource,
         candidates: &[RcvCandidate],
@@ -228,13 +309,7 @@ pub mod ess_reader {
         // .ok_or(CError::Msg("Missing first sheet"))??;
         let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
         debug!("header: {:?}", header);
-        let start_range: usize = match read_js_int(&cfs.first_vote_column_index) {
-            Result::Ok(x) if x >= 1 => (x - 1) as usize,
-            _ => unimplemented!(
-                "failed to find start range {:?}",
-                cfs.first_vote_column_index
-            ),
-        };
+        let start_range = cfs.first_vote_column_index()?;
 
         let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
 
@@ -345,10 +420,56 @@ fn read_ranking_data(
     let p: PathBuf = [root_path, cfs.file_path.clone()].iter().collect();
     let p2 = p.as_path().display().to_string();
     info!("Attempting to read rank file {:?}", p2);
-    match cfs.provider.as_str() {
-        "ess" => ess_reader::read_excel_file(p2, cfs, candidates, rules),
+    let parsed_ballots = match cfs.provider.as_str() {
+        "ess" => ess_reader::read_excel_file(p2, cfs),
         x => unimplemented!("Provider not implemented {:?}", x),
+    }?;
+    validate_ballots(&parsed_ballots, candidates, cfs, rules)
+}
+
+fn validate_ballots(
+    parsed_ballots: &[ParsedBallot],
+    candidates: &[RcvCandidate],
+    source: &FileSource,
+    rules: &RcvRules,
+) -> RcvResult<Vec<Vote>> {
+    let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
+    let mut res: Vec<Vote> = Vec::new();
+
+    let treat_blank_as_undeclared_write_in =
+        source.treat_blank_as_undeclared_write_in.unwrap_or(false);
+
+    for pb in parsed_ballots.iter() {
+        let mut choices: Vec<BallotChoice> = Vec::new();
+
+        for s in pb.choices.iter() {
+            let res: BallotChoice = match s.clone().as_str() {
+                c if candidate_names.contains(c) => BallotChoice::Candidate(c.to_string()),
+                "UWI" => BallotChoice::UndeclaredWriteIn("".to_string()),
+                "" if treat_blank_as_undeclared_write_in => {
+                    BallotChoice::UndeclaredWriteIn("".to_string())
+                }
+                "" => BallotChoice::Undervote,
+                c if source.undervote_label == Some(c.to_string()) => BallotChoice::Undervote,
+                c if source.overvote_label == Some(c.to_string()) => BallotChoice::Overvote,
+                _ => {
+                    if let Some(delim) = source.overvote_delimiter.clone() {
+                        if s.contains(&delim) {
+                            BallotChoice::Overvote
+                        } else {
+                            BallotChoice::UndeclaredWriteIn(s.clone())
+                        }
+                    } else {
+                        BallotChoice::UndeclaredWriteIn(s.clone())
+                    }
+                }
+            };
+            choices.push(res);
+        }
+        // Filter some of the choices.
+        TODO
     }
+    Ok(res)
 }
 
 fn validate_rules(rcv_rules: &RcvRules) -> RcvResult<VoteRules> {

@@ -9,6 +9,8 @@ use std::{
 
 pub use crate::config::*;
 
+pub const UWI: &str = "UNDECLARED_WRITE_IN";
+
 // **** Private structures ****
 
 type RoundId = u32;
