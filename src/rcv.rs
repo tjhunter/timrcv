@@ -1,14 +1,11 @@
 use log::{debug, info, warn};
 
 use ranked_voting::*;
-use std::collections::HashSet;
+use snafu::{prelude::*, ErrorCompat, Snafu};
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result as AHResult;
-use anyhow::{anyhow, Ok};
-
-use calamine::Error as CError;
 use calamine::{open_workbook, Reader, Xlsx};
 
 use serde::{Deserialize, Serialize};
@@ -45,7 +42,7 @@ struct OutputConfig {
 }
 
 #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-struct FileSource {
+pub struct FileSource {
     provider: String,
     #[serde(rename = "filePath")]
     file_path: String,
@@ -72,14 +69,14 @@ struct FileSource {
 }
 
 #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-struct RcvCandidate {
+pub struct RcvCandidate {
     name: String,
     code: Option<String>,
     excluded: Option<bool>,
 }
 
 #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-struct RcvRules {
+pub struct RcvRules {
     #[serde(rename = "tiebreakMode")]
     tiebreak_mode: String,
     #[serde(rename = "overvoteRule")]
@@ -116,6 +113,37 @@ enum BallotChoice {
     Overvote,
     Undervote,
 }
+
+#[derive(Debug, Snafu)]
+pub enum RcvError {
+    #[snafu(display("Error opening file {path}"))]
+    OpeningExcel {
+        source: calamine::XlsxError,
+        path: String,
+    },
+    #[snafu(display(""))]
+    EmptyExcel {},
+    #[snafu(display(""))]
+    OpeningJson { source: std::io::Error },
+    #[snafu(display(""))]
+    ParsingJson { source: serde_json::Error },
+    #[snafu(display(""))]
+    ParsingJsonNumber {},
+    #[snafu(display(""))]
+    MissingParentDir {},
+
+    #[snafu(display("ID may not be less than 10, but it was {id}"))]
+    InvalidId { id: u16 },
+
+    #[snafu(whatever, display("{message}"))]
+    Whatever {
+        message: String,
+        #[snafu(source(from(Box<dyn std::error::Error>, Some)))]
+        source: Option<Box<dyn std::error::Error>>,
+    },
+}
+
+type RcvResult<T> = Result<T, RcvError>;
 
 fn result_stats_to_json(rs: &VotingResult) -> Vec<JSValue> {
     let mut l: Vec<JSValue> = Vec::new();
@@ -160,60 +188,122 @@ fn result_stats_to_json(rs: &VotingResult) -> Vec<JSValue> {
     l
 }
 
-fn read_summary(path: String) -> AHResult<JSValue> {
-    let contents = fs::read_to_string(path)?;
+fn read_summary(path: String) -> RcvResult<JSValue> {
+    let contents = fs::read_to_string(path).context(OpeningJsonSnafu {})?;
     debug!("read content: {:?}", contents);
-    let js: JSValue = serde_json::from_str(contents.as_str())?;
+    let js: JSValue = serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?;
     debug!("read content: {:?}", js["results"].as_array().unwrap());
     Ok(js)
 }
 
-fn read_js_int(x: &Option<JSValue>) -> AHResult<usize> {
+fn read_js_int(x: &Option<JSValue>) -> RcvResult<usize> {
     match x {
-        Some(JSValue::Number(n)) => match n.as_u64() {
-            Some(y) => Ok(y as usize),
-            None => Err(anyhow!("not a number {:?}", x)),
-        },
-        Some(JSValue::String(s)) => s
-            .parse::<usize>()
-            .map_err(|e| anyhow!("not a number {:?}: {:?}", x, e)),
-        _ => Err(anyhow!("not a number {:?}", x)),
+        Some(JSValue::Number(n)) => n
+            .as_u64()
+            .map(|x| x as usize)
+            .context(ParsingJsonNumberSnafu {}),
+        Some(JSValue::String(s)) => s.parse::<usize>().ok().context(ParsingJsonNumberSnafu {}),
+        _ => None.context(ParsingJsonNumberSnafu {}),
     }
 }
 
-fn read_choice_calamine(
-    cell: &calamine::DataType,
-    candidates: &HashSet<String>,
-    source_setting: &FileSource,
-) -> AHResult<BallotChoice> {
-    match cell {
-        calamine::DataType::String(s) if candidates.contains(s) => {
-            Ok(BallotChoice::Candidate(s.clone()))
-        }
-        calamine::DataType::String(s) if s == "UWI" => {
-            Ok(BallotChoice::UndeclaredWriteIn("".to_string()))
-        }
-        calamine::DataType::String(s)
-            if s.is_empty()
-                && source_setting
-                    .treat_blank_as_undeclared_write_in
-                    .unwrap_or(false) =>
-        {
-            Ok(BallotChoice::UndeclaredWriteIn("".to_string()))
-        }
-        calamine::DataType::String(s) if source_setting.undervote_label == Some(s.clone()) => {
-            Ok(BallotChoice::Undervote)
-        }
-        calamine::DataType::String(s) => {
-            if let Some(delim) = source_setting.overvote_delimiter.clone() {
-                if s.contains(&delim) {
-                    return Ok(BallotChoice::Overvote);
-                }
+pub mod ess_reader {
+    use crate::rcv::*;
+    use std::collections::HashSet;
+
+    pub fn read_excel_file(
+        path: String,
+        cfs: &FileSource,
+        candidates: &[RcvCandidate],
+        rules: &RcvRules,
+    ) -> RcvResult<Vec<ranked_voting::Vote>> {
+        let p = path.clone();
+        let mut workbook: Xlsx<_> =
+            open_workbook(p).context(OpeningExcelSnafu { path: path.clone() })?;
+        let wrange = workbook
+            .worksheet_range_at(0)
+            .context(EmptyExcelSnafu {})?
+            .context(OpeningExcelSnafu { path })?;
+
+        // .ok_or(CError::Msg("Missing first sheet"))??;
+        let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
+        debug!("header: {:?}", header);
+        let start_range: usize = match read_js_int(&cfs.first_vote_column_index) {
+            Result::Ok(x) if x >= 1 => (x - 1) as usize,
+            _ => unimplemented!(
+                "failed to find start range {:?}",
+                cfs.first_vote_column_index
+            ),
+        };
+
+        let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
+
+        let mut iter = wrange.rows();
+        // TODO check for correctness
+        iter.next();
+        let mut res: Vec<Vote> = Vec::new();
+        for row in iter {
+            debug!("workbook: {:?}", row);
+            // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
+            let choices = &row[start_range..];
+            let mut cs: Vec<BallotChoice> = Vec::new();
+            for elt in choices {
+                let bc = read_choice_calamine(elt, &candidate_names, cfs)?;
+                cs.push(bc)
             }
-            Err(anyhow!("Wrong data type: {:?}", s))
+            // TODO implement count
+            let count: u64 = match None {
+                Some(calamine::DataType::Float(f)) => f as u64,
+                Some(calamine::DataType::Int(i)) => i as u64,
+                Some(_) => {
+                    whatever!("wrong type")
+                }
+                None => 1,
+            };
+            if let Some(v) = create_vote(&"NO ID".to_string(), count, &cs, rules)? {
+                res.push(v);
+            }
         }
-        calamine::DataType::Empty => Ok(BallotChoice::Undervote),
-        _ => Err(anyhow!("")),
+        Ok(res)
+    }
+
+    fn read_choice_calamine(
+        cell: &calamine::DataType,
+        candidates: &HashSet<String>,
+        source_setting: &FileSource,
+    ) -> RcvResult<BallotChoice> {
+        match cell {
+            calamine::DataType::String(s) if candidates.contains(s) => {
+                Ok(BallotChoice::Candidate(s.clone()))
+            }
+            calamine::DataType::String(s) if s == "UWI" => {
+                Ok(BallotChoice::UndeclaredWriteIn("".to_string()))
+            }
+            calamine::DataType::String(s)
+                if s.is_empty()
+                    && source_setting
+                        .treat_blank_as_undeclared_write_in
+                        .unwrap_or(false) =>
+            {
+                Ok(BallotChoice::UndeclaredWriteIn("".to_string()))
+            }
+            calamine::DataType::String(s) if source_setting.undervote_label == Some(s.clone()) => {
+                Ok(BallotChoice::Undervote)
+            }
+            calamine::DataType::String(s) => {
+                if let Some(delim) = source_setting.overvote_delimiter.clone() {
+                    if s.contains(&delim) {
+                        return Ok(BallotChoice::Overvote);
+                    }
+                }
+                whatever!("Wrong data type: {:?}", s)
+            }
+            calamine::DataType::Empty => Ok(BallotChoice::Undervote),
+            _ => whatever!(
+                "TODO MSG:read_choice_calamine: could not understand cell {:?}",
+                cell
+            ),
+        }
     }
 }
 
@@ -223,7 +313,7 @@ fn create_vote(
     count: u64,
     choices: &[BallotChoice],
     _rules: &RcvRules,
-) -> AHResult<Option<Vote>> {
+) -> RcvResult<Option<Vote>> {
     let mut candidates: Vec<String> = Vec::new();
     // For now, be very permissive.
     for c in choices {
@@ -246,76 +336,22 @@ fn create_vote(
     Ok(Some(Vote { candidates, count }))
 }
 
-fn read_excel_file(
-    path: String,
-    cfs: &FileSource,
-    candidates: &[RcvCandidate],
-    rules: &RcvRules,
-) -> AHResult<Vec<ranked_voting::Vote>> {
-    let mut workbook: Xlsx<_> = open_workbook(path)?;
-    let wrange = workbook
-        .worksheet_range_at(0)
-        .ok_or(CError::Msg("Missing first sheet"))??;
-    let header = wrange
-        .rows()
-        .next()
-        .ok_or(CError::Msg("Missing first row"))?;
-    debug!("header: {:?}", header);
-    let start_range: usize = match read_js_int(&cfs.first_vote_column_index) {
-        Result::Ok(x) if x >= 1 => (x - 1) as usize,
-        _ => unimplemented!(
-            "failed to find start range {:?}",
-            cfs.first_vote_column_index
-        ),
-    };
-
-    let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
-
-    let mut iter = wrange.rows();
-    // TODO check for correctness
-    iter.next();
-    let mut res: Vec<Vote> = Vec::new();
-    for row in iter {
-        debug!("workbook: {:?}", row);
-        // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
-        let choices = &row[start_range..];
-        let mut cs: Vec<BallotChoice> = Vec::new();
-        for elt in choices {
-            let bc = read_choice_calamine(elt, &candidate_names, cfs)?;
-            cs.push(bc)
-        }
-        // TODO implement count
-        let count: u64 = match None {
-            Some(calamine::DataType::Float(f)) => f as u64,
-            Some(calamine::DataType::Int(i)) => i as u64,
-            Some(_) => {
-                return Err(anyhow!(CError::Msg("wrong type")));
-            }
-            None => 1,
-        };
-        if let Some(v) = create_vote(&"NO ID".to_string(), count, &cs, rules)? {
-            res.push(v);
-        }
-    }
-    Ok(res)
-}
-
 fn read_ranking_data(
     root_path: String,
     cfs: &FileSource,
     candidates: &[RcvCandidate],
     rules: &RcvRules,
-) -> AHResult<Vec<ranked_voting::Vote>> {
+) -> RcvResult<Vec<ranked_voting::Vote>> {
     let p: PathBuf = [root_path, cfs.file_path.clone()].iter().collect();
     let p2 = p.as_path().display().to_string();
     info!("Attempting to read rank file {:?}", p2);
     match cfs.provider.as_str() {
-        "ess" => read_excel_file(p2, cfs, candidates, rules),
+        "ess" => ess_reader::read_excel_file(p2, cfs, candidates, rules),
         x => unimplemented!("Provider not implemented {:?}", x),
     }
 }
 
-fn validate_rules(rcv_rules: &RcvRules) -> AHResult<VoteRules> {
+fn validate_rules(rcv_rules: &RcvRules) -> RcvResult<VoteRules> {
     let res = VoteRules {
         tiebreak_mode: match rcv_rules.tiebreak_mode.as_str() {
             "useCandidateOrder" => TieBreakMode::UseCandidateOrder,
@@ -323,28 +359,28 @@ fn validate_rules(rcv_rules: &RcvRules) -> AHResult<VoteRules> {
                 let seed = match rcv_rules.random_seed.clone().map(|s| s.parse::<u32>()) {
                     Some(Result::Ok(x)) => x,
                     x => {
-                        return Err(anyhow!(
+                        whatever!(
                             "Cannot use tiebreak mode {:?} (currently not implemented)",
                             x
-                        ));
+                        )
                     }
                 };
                 TieBreakMode::Random(seed)
             }
             x => {
-                return Err(anyhow!(
+                whatever!(
                     "Cannot use tiebreak mode {:?} (currently not implemented)",
                     x
-                ));
+                )
             }
         },
         winner_election_mode: match rcv_rules.winner_election_mode.as_str() {
             "singleWinnerMajority" => WinnerElectionMode::SingelWinnerMajority,
             x => {
-                return Err(anyhow!(
+                whatever!(
                     "Cannot use election mode {:?}: currently not implemented",
                     x
-                ));
+                )
             }
         },
         number_of_winners: 1,         // TODO: implement
@@ -353,10 +389,10 @@ fn validate_rules(rcv_rules: &RcvRules) -> AHResult<VoteRules> {
             Err(_) if rcv_rules.max_rankings_allowed == "max" => None,
             Result::Ok(x) if x > 0 => Some(x),
             x => {
-                return Err(anyhow!(
+                whatever!(
                     "Failed to understand maxRankingsAllowed option: {:?}: currently not implemented",
                     x
-                ));
+                )
             }
         },
         duplicate_candidate_mode: match rcv_rules.exhaust_on_duplicate_candidate {
@@ -380,10 +416,10 @@ fn build_summary_js(config: &RcvConfig, rv: &VotingResult) -> JSValue {
          "results": result_stats_to_json(rv) })
 }
 
-pub fn run_election(config_path: String, check_summary_path: Option<String>) -> AHResult<()> {
+pub fn run_election(config_path: String, check_summary_path: Option<String>) -> RcvResult<()> {
     let config_p = Path::new(config_path.as_str());
-    let config_str = fs::read_to_string(config_path.clone())?;
-    let config: RcvConfig = serde_json::from_str(&config_str)?;
+    let config_str = fs::read_to_string(config_path.clone()).context(OpeningJsonSnafu {})?;
+    let config: RcvConfig = serde_json::from_str(&config_str).context(ParsingJsonSnafu {})?;
     let config2 = config.clone();
     info!("config: {:?}", config);
 
@@ -394,9 +430,7 @@ pub fn run_election(config_path: String, check_summary_path: Option<String>) -> 
         unimplemented!("no file sources detected");
     }
 
-    let root_p = config_p
-        .parent()
-        .ok_or_else(|| anyhow!("No parent for directory {:?}", config_p))?;
+    let root_p = config_p.parent().context(MissingParentDirSnafu {})?;
     let mut data: Vec<Vote> = Vec::new();
     for cfs in config.cvr_file_sources {
         let mut file_data = read_ranking_data(
@@ -430,7 +464,7 @@ pub fn run_election(config_path: String, check_summary_path: Option<String>) -> 
     let result = match res {
         Result::Ok(x) => x,
         Result::Err(x) => {
-            return Err(anyhow!("Voting error: {:?}", x));
+            whatever!("Voting error: {:?}", x)
         }
     };
 
@@ -438,14 +472,15 @@ pub fn run_election(config_path: String, check_summary_path: Option<String>) -> 
     let result_js = build_summary_js(&config2, &result);
 
     // TODO
-    let pretty_js_stats = serde_json::to_string_pretty(&result_js)?;
+    let pretty_js_stats = serde_json::to_string_pretty(&result_js).context(ParsingJsonSnafu {})?;
     println!("stats:{}", pretty_js_stats);
 
     // The reference summary, if provided for comparison
     if let Some(summary_p) = check_summary_path {
         let summary_ref = read_summary(summary_p)?;
         info!("summary: {:?}", summary_ref);
-        let pretty_js_summary_ref = serde_json::to_string_pretty(&summary_ref)?;
+        let pretty_js_summary_ref =
+            serde_json::to_string_pretty(&summary_ref).context(ParsingJsonSnafu {})?;
         if pretty_js_summary_ref != pretty_js_stats {
             warn!("Found differences with the reference string");
             print_diff(
@@ -453,9 +488,7 @@ pub fn run_election(config_path: String, check_summary_path: Option<String>) -> 
                 pretty_js_stats.as_ref(),
                 "\n",
             );
-            return Err(anyhow!(
-                "Difference detected between calculated summary and reference summary"
-            ));
+            whatever!("Difference detected between calculated summary and reference summary")
         }
     }
 
@@ -467,11 +500,19 @@ fn run_election_test(test_name: &str, config_lpath: &str, summary_lpath: &str) {
         "/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data",
     );
     info!("Running test {}", test_name);
-    run_election(
+    let res = run_election(
         format!("{}/{}/{}", test_dir, test_name, config_lpath),
         Some(format!("{}/{}/{}", test_dir, test_name, summary_lpath)),
-    )
-    .unwrap();
+    );
+    if let Err(e) = res {
+        warn!("Error occured {:?}", e);
+        eprintln!("An error occured {}", e);
+        if let Some(bt) = ErrorCompat::backtrace(&e) {
+            eprintln!("trace: {}", bt);
+        } else {
+            eprintln!("No trace found");
+        }
+    }
 }
 
 pub fn test_wrapper(test_name: &str) {
