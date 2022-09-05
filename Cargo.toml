@@ -8,6 +8,9 @@ edition = "2021"
 
 [workspace]
 
+[[bin]]
+name = "timrcv"
+path = "src/main.rs"
 
 [dependencies]
 ranked_voting = { path = "ranked_voting" }

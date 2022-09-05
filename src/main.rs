@@ -22,17 +22,10 @@ struct Args {
 const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 
 fn main() -> ExitCode {
-    println!(
-        "This is ranking_vote version {}",
-        VERSION.unwrap_or("unknown")
-    );
+    println!("This is timrcv version {}", VERSION.unwrap_or("unknown"));
     env_logger::init();
 
-    let args = Args::parse();
-
-    for _ in 0..args.count {
-        println!("Hello {:?}!", args.name)
-    }
+    let _args = Args::parse();
 
     test_wrapper("precinct_example");
     ExitCode::SUCCESS
