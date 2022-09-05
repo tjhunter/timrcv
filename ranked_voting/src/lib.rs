@@ -10,6 +10,7 @@ use std::{
 pub use crate::config::*;
 
 pub const UWI: &str = "UNDECLARED_WRITE_IN";
+const UWI_CANDIDATE_ID: CandidateId = CandidateId(0);
 
 // **** Private structures ****
 
@@ -129,6 +130,7 @@ pub fn run_voting_stats(
 
     let cr: CheckResult = checks(coll, candidates)?;
     let checked_votes = cr.votes;
+    debug!("Checked votes: {:?}", checked_votes);
     let all_candidates = cr.candidates;
     info!(
         "Processing {:?} aggregated votes, candidates: {:?}",
@@ -288,19 +290,31 @@ fn run_one_round(
 
     let resolved_tiebreak: TiebreakSituation;
     // Find the candidates to eliminate
-    let eliminated_candidates: HashSet<CandidateId> =
-        match find_eliminated_candidates(&tally, rules.tiebreak_mode, candidate_names, num_round) {
-            Some((v, tb)) => {
-                resolved_tiebreak = tb;
-                v.iter().cloned().collect()
+    let eliminated_candidates: HashSet<CandidateId> = {
+        if tally.get(&UWI_CANDIDATE_ID).is_some() {
+            let mut res = HashSet::new();
+            res.insert(UWI_CANDIDATE_ID);
+            resolved_tiebreak = TiebreakSituation::Clean;
+            res
+        } else {
+            match find_eliminated_candidates(
+                &tally,
+                rules.tiebreak_mode,
+                candidate_names,
+                num_round,
+            ) {
+                Some((v, tb)) => {
+                    resolved_tiebreak = tb;
+                    v.iter().cloned().collect()
+                }
+                None => {
+                    // No candidate to eliminate.
+                    // TODO check the conditions for this to happen.
+                    unimplemented!("No candidate to eliminate");
+                }
             }
-            None => {
-                // No candidate to eliminate.
-                // TODO check the conditions for this to happen.
-                unimplemented!("No candidate to eliminate");
-            }
-        };
-
+        }
+    };
     // TODO strategy to pick the winning candidates
 
     assert!(!eliminated_candidates.is_empty(), "No candidate eliminated");
@@ -533,8 +547,17 @@ fn checks(
             }
         })
         .collect();
+    let reg_candidate_names: Option<HashSet<String>>;
+    if let Some(cs) = reg_candidates {
+        reg_candidate_names = Some(cs.iter().map(|c| c.name.clone()).collect());
+    } else {
+        reg_candidate_names = None;
+    }
     let mut candidates: HashMap<String, CandidateId> = HashMap::new();
+    // number 0 is reserved for the undeclared write in's.
+    // Counter will be always incremendet before being used.
     let mut counter: u32 = 0;
+    // TODO: this code can be simplified.
     let vas: Vec<VoteInternal> = coll
         .iter()
         .map(|v| {
@@ -545,15 +568,29 @@ fn checks(
                     if blacklisted_candidates.contains(c) {
                         None
                     } else {
-                        let cid: CandidateId = *candidates.entry(c.clone()).or_insert_with(|| {
-                            counter += 1;
-                            CandidateId(counter)
+                        // Check if the name is one of a regular candidate or it should be discarded as an
+                        // undeclared write in.
+                        let n: String = match &reg_candidate_names {
+                            // We have been provided a list of regular candidates and this list does
+                            // not include the name of the current candidate.
+                            // Discard it as a UWI
+                            Some(c_names) if !c_names.contains(c) => UWI.to_string(),
+                            _ => c.clone(),
+                        };
+                        let nc = n.clone();
+                        let cid: CandidateId = *candidates.entry(n).or_insert_with(|| {
+                            if nc == UWI {
+                                UWI_CANDIDATE_ID
+                            } else {
+                                counter += 1;
+                                CandidateId(counter)
+                            }
                         });
                         Some(cid)
                     }
                 })
                 .collect();
-            let randked_choice = match &cs[..] {
+            let randked_choice: RankedChoice = match &cs[..] {
                 [first, rest @ ..] => RankedChoice {
                     first: *first,
                     rest: rest.to_vec(),
@@ -566,7 +603,6 @@ fn checks(
                 count: VoteCount(v.count),
                 candidates: randked_choice,
             }
-            // unimplemented!("checks");
         })
         .collect();
     debug!(
@@ -574,7 +610,7 @@ fn checks(
         vas.len(),
         candidates.len()
     );
-    let ordered_candidates: Vec<(String, CandidateId)> = match reg_candidates {
+    let mut ordered_candidates: Vec<(String, CandidateId)> = match reg_candidates {
         None => {
             // We use the candidates who have been discovered.
             // The order is the one of the ids.
@@ -590,6 +626,10 @@ fn checks(
             .filter_map(|c| candidates.get(&c.name).map(|cid| (c.name.clone(), *cid)))
             .collect(),
     };
+    // If some UWIs were also found, add it to the list of candidates.
+    if let Some(idx) = candidates.get(UWI) {
+        ordered_candidates.push((UWI.to_string(), *idx));
+    }
     Ok(CheckResult {
         votes: vas,
         candidates: ordered_candidates,

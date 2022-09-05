@@ -23,7 +23,7 @@ enum BallotChoice {
     Candidate(String),
     UndeclaredWriteIn(String),
     Overvote,
-    Undervote,
+    Undervote, // Blank vote
 }
 
 #[derive(Debug, Snafu)]
@@ -64,13 +64,21 @@ fn result_stats_to_json(rs: &VotingResult) -> Vec<JSValue> {
         let round_stat = _round_stat.clone();
         let mut tally: JSMap<String, JSValue> = JSMap::new();
         for (name, count) in round_stat.tally {
-            tally.insert(name.clone(), json!(count.to_string()));
+            let name2 = if name == UWI {
+                "Undeclared Write-ins".to_string()
+            } else {
+                name.clone()
+            };
+
+            tally.insert(name2, json!(count.to_string()));
         }
 
         let mut tally_results: Vec<JSValue> = Vec::new();
         for elim_stats in round_stat.tally_result_eliminated {
             let mut transfers: JSMap<String, JSValue> = JSMap::new();
             for (name, count) in elim_stats.transfers {
+                // No UWI to account for in transfers for now
+                // TODO: check that this is the case
                 transfers.insert(name, json!(count.to_string()));
             }
             if elim_stats.exhausted > 0 {
@@ -81,8 +89,13 @@ fn result_stats_to_json(rs: &VotingResult) -> Vec<JSValue> {
             }
             // The eliminated candidates are not output for the last round.
             if idx < num_rounds - 1 {
+                let name2 = if elim_stats.name == UWI {
+                    "Undeclared Write-ins".to_string()
+                } else {
+                    elim_stats.name.clone()
+                };
                 tally_results.push(json!({
-                    "eliminated": elim_stats.name,
+                    "eliminated": name2,
                     "transfers": transfers
                 }));
             }
@@ -431,7 +444,7 @@ fn validate_ballots(
     parsed_ballots: &[ParsedBallot],
     candidates: &[RcvCandidate],
     source: &FileSource,
-    rules: &RcvRules,
+    _rules: &RcvRules,
 ) -> RcvResult<Vec<Vote>> {
     let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
     let mut res: Vec<Vote> = Vec::new();
@@ -466,8 +479,26 @@ fn validate_ballots(
             };
             choices.push(res);
         }
+
+        debug!("Choices for ballot {:?}: {:?}", pb.id, choices);
+
         // Filter some of the choices.
-        TODO
+
+        let candidates: Vec<String> = choices
+            .iter()
+            .filter_map(|x| match x {
+                BallotChoice::Candidate(x) => Some(x.clone()),
+                BallotChoice::UndeclaredWriteIn(_) => Some(UWI.to_string()),
+                BallotChoice::Overvote => None,
+                BallotChoice::Undervote => None,
+            })
+            .collect();
+
+        // Default of 1 if not specified
+        let count = pb.count.unwrap_or(1);
+        if count > 0 && !candidates.is_empty() {
+            res.push(Vote { candidates, count });
+        }
     }
     Ok(res)
 }
