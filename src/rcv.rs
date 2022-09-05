@@ -200,6 +200,8 @@ pub mod config_reader {
         pub max_rankings_allowed: String,
         #[serde(rename = "rulesDescription")]
         pub rules_description: Option<String>,
+        #[serde(rename = "batchElimination")]
+        pub batch_elimination: Option<bool>,
         #[serde(rename = "exhaustOnDuplicateCandidate")]
         pub exhaust_on_duplicate_candidate: Option<bool>,
     }
@@ -216,9 +218,34 @@ pub mod config_reader {
 
     pub fn read_summary(path: String) -> RcvResult<JSValue> {
         let contents = fs::read_to_string(path).context(OpeningJsonSnafu {})?;
-        debug!("read content: {:?}", contents);
-        let js: JSValue = serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?;
-        debug!("read content: {:?}", js["results"].as_array().unwrap());
+        // debug!("read content: {:?}", contents);
+        let mut js: JSValue =
+            serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?;
+        // Order the tally results to ensure stability
+        let results_ordered: Vec<JSValue> = js["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|jsv| {
+                let mut res = jsv.clone();
+                let mut tally_results: Vec<JSValue> =
+                    res["tallyResults"].as_array().unwrap().clone();
+                tally_results.sort_by_key(|trjs| {
+                    let obj = trjs.as_object().unwrap().clone();
+                    let elected = obj.get("elected");
+                    let eliminated = obj.get("eliminated");
+                    let s: String = elected
+                        .or(eliminated)
+                        .map(|x| x.as_str().unwrap().to_string())
+                        .unwrap();
+                    s
+                });
+                res["tallyResults"] = serde_json::Value::Array(tally_results);
+                res
+            })
+            .collect();
+        js["results"] = serde_json::Value::Array(results_ordered);
+        // debug!("read content: {:?}", js["results"].as_array().unwrap());
         Ok(js)
     }
 
@@ -559,6 +586,13 @@ fn validate_rules(rcv_rules: &RcvRules) -> RcvResult<VoteRules> {
                 )
             }
         },
+        elimination_algorithm: {
+            if rcv_rules.batch_elimination.unwrap_or(false) {
+                EliminationAlgorithm::Batch
+            } else {
+                EliminationAlgorithm::Single
+            }
+        },
         duplicate_candidate_mode: match rcv_rules.exhaust_on_duplicate_candidate {
             Some(true) => DuplicateCandidateMode::Exhaust,
             _ => DuplicateCandidateMode::SkipDuplicate,
@@ -853,7 +887,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO P0"]
     fn precinct_example() {
         test_wrapper("precinct_example");
     }

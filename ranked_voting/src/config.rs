@@ -66,6 +66,20 @@ pub enum WinnerElectionMode {
     SingelWinnerMajority, // TODO add the other modes
 }
 
+/// The elimination algorithm to apply.
+///
+/// - Single eliminates one candidate at a time. This is the easiest to
+/// understand, but it may add many more rounds when there a lot of
+/// candidates with a comparatively very low number of votes.
+///
+/// - Batch eliminates candidates more rapidly.
+/// TODO document algorithm.
+#[derive(Eq, PartialEq, Debug, Clone, Copy)]
+pub enum EliminationAlgorithm {
+    Batch,
+    Single,
+}
+
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct VoteRules {
     pub tiebreak_mode: TieBreakMode,
@@ -83,6 +97,7 @@ pub struct VoteRules {
     // TODO hareQuota
     // TODO batchElimination
     // TODO continueUntilTwoCandidatesRemain
+    pub elimination_algorithm: EliminationAlgorithm,
     pub duplicate_candidate_mode: DuplicateCandidateMode,
 }
 
@@ -93,6 +108,7 @@ impl VoteRules {
         number_of_winners: 1,
         minimum_vote_threshold: None,
         max_rankings_allowed: None,
+        elimination_algorithm: EliminationAlgorithm::Single,
         duplicate_candidate_mode: DuplicateCandidateMode::SkipDuplicate,
     };
 }

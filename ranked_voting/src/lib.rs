@@ -143,6 +143,13 @@ pub fn run_voting_stats(
         initial_count += v.count;
     }
 
+    // We are done, stop here.
+    let candidates_by_id: HashMap<CandidateId, String> = all_candidates
+        .iter()
+        .map(|(cname, cid)| (*cid, cname.clone()))
+        .collect();
+
+    let mut cur_candidates: Vec<(String, CandidateId)> = all_candidates;
     let mut cur_votes: Vec<VoteInternal> = checked_votes;
     let mut cur_stats: Vec<Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>> =
         Vec::new();
@@ -150,11 +157,25 @@ pub fn run_voting_stats(
     // TODO: better management of the number of iterations
     while cur_stats.iter().len() < 10000 {
         let round_id = (cur_stats.iter().len() + 1) as u32;
-        let round_res = run_one_round(&cur_votes, rules, &all_candidates, round_id)?;
+        let round_res = run_one_round(&cur_votes, rules, &cur_candidates, round_id)?;
         let stats = round_res.stats.clone();
         info!("Round id: {:?} stats: {:?}", round_id, round_res.stats);
         cur_votes = round_res.votes;
         cur_stats.push(round_res.stats);
+        let survivors: Vec<(String, CandidateId)> = stats
+            .iter()
+            .filter_map(|(cid, _, s)| match s {
+                RoundCandidateStatusInternal::Eliminated(_, _) => None,
+                _ => Some((candidates_by_id.get(cid).unwrap().clone(), *cid)),
+            })
+            .collect();
+        assert!(
+            survivors.len() < cur_candidates.len(),
+            "The number of candidates did not decrease: {:?} -> {:?}",
+            cur_candidates,
+            survivors
+        );
+        cur_candidates = survivors;
 
         // Check end. For now, simply check that we have a winner.
         // TODO check that everyone is a winner or eliminated.
@@ -168,11 +189,6 @@ pub fn run_voting_stats(
             })
             .collect();
         if !winners.is_empty() {
-            // We are done, stop here.
-            let candidates_by_id: HashMap<CandidateId, String> = all_candidates
-                .iter()
-                .map(|(cname, cid)| (*cid, cname.clone()))
-                .collect();
             let stats = round_results_to_stats(&cur_stats, &candidates_by_id)?;
             let mut winner_names: Vec<String> = Vec::new();
             for cid in winners {
@@ -250,6 +266,8 @@ fn round_result_to_stat(
             }
         }
     }
+    rs.tally_result_eliminated.sort_by_key(|es| es.name.clone());
+    rs.tally_results_elected.sort();
     Ok(rs)
 }
 
@@ -260,11 +278,23 @@ fn run_one_round(
     candidate_names: &[(String, CandidateId)],
     num_round: u32,
 ) -> Result<RoundResult, VotingErrors> {
-    let tally: HashMap<CandidateId, VoteCount> =
-        votes.iter().fold(HashMap::new(), |mut acc, va| {
-            *acc.entry(va.candidates.first).or_insert(VoteCount(0)) += va.count;
-            acc
-        });
+    // Initialize the tally with the current candidate names to capture all the candidates who do
+    // not even have a vote.
+    let mut tally: HashMap<CandidateId, VoteCount> = HashMap::new();
+    for (_, cid) in candidate_names.iter() {
+        tally.insert(*cid, VoteCount::EMPTY);
+    }
+    for v in votes.iter() {
+        if let Some(vc) = tally.get_mut(&v.candidates.first) {
+            *vc += v.count;
+        } else {
+        }
+    }
+    // let tally: HashMap<CandidateId, VoteCount> =
+    //     votes.iter().fold(HashMap::new(), |mut acc, va| {
+    //         *acc.entry(va.candidates.first).or_insert(VoteCount(0)) += va.count;
+    //         acc
+    //     });
 
     debug!("tally: {:?}", tally);
 
@@ -288,37 +318,16 @@ fn run_one_round(
         });
     }
 
-    let resolved_tiebreak: TiebreakSituation;
     // Find the candidates to eliminate
-    let eliminated_candidates: HashSet<CandidateId> = {
-        if tally.get(&UWI_CANDIDATE_ID).is_some() {
-            let mut res = HashSet::new();
-            res.insert(UWI_CANDIDATE_ID);
-            resolved_tiebreak = TiebreakSituation::Clean;
-            res
-        } else {
-            match find_eliminated_candidates(
-                &tally,
-                rules.tiebreak_mode,
-                candidate_names,
-                num_round,
-            ) {
-                Some((v, tb)) => {
-                    resolved_tiebreak = tb;
-                    v.iter().cloned().collect()
-                }
-                None => {
-                    // No candidate to eliminate.
-                    // TODO check the conditions for this to happen.
-                    unimplemented!("No candidate to eliminate");
-                }
-            }
-        }
-    };
+    let p = find_eliminated_candidates(&tally, rules, candidate_names, num_round);
+    let resolved_tiebreak: TiebreakSituation = p.1;
+    let eliminated_candidates: HashSet<CandidateId> = p.0.iter().cloned().collect();
+
     // TODO strategy to pick the winning candidates
 
     assert!(!eliminated_candidates.is_empty(), "No candidate eliminated");
     debug!("run_one_round: tiebreak situation: {:?}", resolved_tiebreak);
+    debug!("run_one_round: eliminated_candidates: {:?}", p.0);
 
     // Statistics about transfers:
     // For every eliminated candidates, keep the vote transfer, or the exhausted vote.
@@ -422,16 +431,89 @@ fn run_one_round(
     })
 }
 
-// Flag to indicate if a tiebreak happened.
+fn find_eliminated_candidates(
+    tally: &HashMap<CandidateId, VoteCount>,
+    rules: &config::VoteRules,
+    candidate_names: &[(String, CandidateId)],
+    num_round: u32,
+) -> (Vec<CandidateId>, TiebreakSituation) {
+    if tally.get(&UWI_CANDIDATE_ID).is_some() {
+        return (vec![UWI_CANDIDATE_ID], TiebreakSituation::Clean);
+    };
 
+    // Try to eliminate candidates in batch
+    if let Some(v) = find_eliminated_candidates_batch(tally) {
+        return (v, TiebreakSituation::Clean);
+    }
+
+    if let Some((v, tb)) =
+        find_eliminated_candidates_single(tally, rules.tiebreak_mode, candidate_names, num_round)
+    {
+        return (v, tb);
+    }
+    // No candidate to eliminate.
+    // TODO check the conditions for this to happen.
+    unimplemented!("No candidate to eliminate");
+}
+
+fn find_eliminated_candidates_batch(
+    tally: &HashMap<CandidateId, VoteCount>,
+) -> Option<Vec<CandidateId>> {
+    // Sort the candidates in increasing tally.
+    let mut sorted_tally: Vec<(CandidateId, VoteCount)> =
+        tally.iter().map(|(&cid, &vc)| (cid, vc)).collect();
+    sorted_tally.sort_by_key(|(_, vc)| *vc);
+    debug!(
+        "find_eliminated_candidates_batch: sorted_tally: {:?}",
+        sorted_tally
+    );
+
+    // the vote count for this candidate and the cumulative count (excluding the current one)
+    let mut sorted_tally_cum: Vec<(CandidateId, VoteCount, VoteCount)> = Vec::new();
+    let mut curr_count = VoteCount::EMPTY;
+    for (cid, cur_vc) in sorted_tally.iter() {
+        sorted_tally_cum.push((*cid, *cur_vc, curr_count));
+        curr_count += *cur_vc;
+    }
+    debug!(
+        "find_eliminated_candidates_batch: sorted_tally_cum: {:?}",
+        sorted_tally_cum
+    );
+
+    // Find the largest index for which the previous cumulative count is strictly lower than the current vote count.
+    // Anything below will not be able to transfer higher.
+
+    let large_gap_idx = sorted_tally_cum
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, cur_vc, previous_cum_count))| previous_cum_count < cur_vc)
+        .last();
+    debug!(
+        "find_eliminated_candidates_batch: large_gap_idx: {:?}",
+        large_gap_idx
+    );
+
+    if let Some((idx, _)) = large_gap_idx {
+        let res = sorted_tally.iter().map(|(cid, _)| *cid).take(idx).collect();
+        debug!(
+            "find_eliminated_candidates_batch: found a batch to eliminate: {:?}",
+            res
+        );
+        Some(res)
+    } else {
+        None
+    }
+}
+
+// Flag to indicate if a tiebreak happened.
 #[derive(Eq, PartialEq, Debug, Clone, Copy, Hash)]
 enum TiebreakSituation {
     Clean,           // Did not happen
     TiebreakOccured, // Happened and had to be resolved.
 }
 
-// Elimination method.
-fn find_eliminated_candidates(
+// Elimination method for single candidates.
+fn find_eliminated_candidates_single(
     tally: &HashMap<CandidateId, VoteCount>,
     tiebreak: TieBreakMode,
     candidate_names: &[(String, CandidateId)],
@@ -547,16 +629,24 @@ fn checks(
             }
         })
         .collect();
-    let reg_candidate_names: Option<HashSet<String>>;
-    if let Some(cs) = reg_candidates {
-        reg_candidate_names = Some(cs.iter().map(|c| c.name.clone()).collect());
-    } else {
-        reg_candidate_names = None;
-    }
-    let mut candidates: HashMap<String, CandidateId> = HashMap::new();
     // number 0 is reserved for the undeclared write in's.
     // Counter will be always incremendet before being used.
     let mut counter: u32 = 0;
+    let reg_candidate_names: Option<HashSet<String>>;
+    // Assign to everyone who is a regular candidate an ID, not just the ones in the votes.
+    // This simplifies the accounting when showing candidates who do not get votes.
+    let mut candidates: HashMap<String, CandidateId> = HashMap::new();
+    if let Some(cs) = reg_candidates {
+        reg_candidate_names = Some(cs.iter().map(|c| c.name.clone()).collect());
+        candidates = cs
+            .iter()
+            .enumerate()
+            .map(|(idx, s)| (s.name.clone(), CandidateId((idx as u32) + 1)))
+            .collect();
+        counter = cs.len() as u32;
+    } else {
+        reg_candidate_names = None;
+    }
     // TODO: this code can be simplified.
     let vas: Vec<VoteInternal> = coll
         .iter()
