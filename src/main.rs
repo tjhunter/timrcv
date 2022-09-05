@@ -34,7 +34,7 @@ fn main() -> ExitCode {
         println!("Hello {:?}!", args.name)
     }
 
-    test_wrapper("test_set_treat_blank_as_undeclared_write_in");
+    test_wrapper("precinct_example");
     ExitCode::SUCCESS
 
     // let r = rcv::run_election("/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data/duplicate_test/duplicate_test_config.json".to_string(),

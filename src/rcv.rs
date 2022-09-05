@@ -246,6 +246,8 @@ pub struct ParsedBallot {
 }
 
 pub mod ess_reader {
+    use snafu::OptionExt;
+
     use crate::rcv::*;
     use std::collections::HashSet;
 
@@ -258,7 +260,6 @@ pub mod ess_reader {
             .context(EmptyExcelSnafu {})?
             .context(OpeningExcelSnafu { path })?;
 
-        // .ok_or(CError::Msg("Missing first sheet"))??;
         let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
         debug!("header: {:?}", header);
         let start_range = cfs.first_vote_column_index()?;
@@ -272,32 +273,43 @@ pub mod ess_reader {
             // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
             let choices = &row[start_range..];
             let mut cs: Vec<String> = Vec::new();
-            for elt in choices {
-                let bc = read_choice_calamine2(elt)?;
-                cs.push(bc)
+            let num_row_choices = choices.len();
+            for (idx, elt) in choices.iter().enumerate() {
+                let bco = read_choice_calamine2(elt, idx == num_row_choices - 1)?;
+                if let Some(bc) = bco {
+                    cs.push(bc);
+                }
             }
+            // Count: look for it at the last cell.
+            let last_elt = choices.last().context(EmptyExcelSnafu {})?;
             // TODO implement count
-            let count: u64 = match None {
-                Some(calamine::DataType::Float(f)) => f as u64,
-                Some(calamine::DataType::Int(i)) => i as u64,
-                Some(_) => {
+            let count: Option<u64> = match last_elt {
+                calamine::DataType::Float(f) => Some(*f as u64),
+                calamine::DataType::Int(i) => Some(*i as u64),
+                calamine::DataType::String(_) => None,
+                _ => {
                     whatever!("wrong type")
                 }
-                None => 1,
             };
             res.push(ParsedBallot {
                 id: None,
-                count: Some(count),
+                count,
                 choices: cs,
             });
         }
         Ok(res)
     }
 
-    fn read_choice_calamine2(cell: &calamine::DataType) -> RcvResult<String> {
+    fn read_choice_calamine2(
+        cell: &calamine::DataType,
+        is_last_column: bool,
+    ) -> RcvResult<Option<String>> {
         match cell {
-            calamine::DataType::String(s) => Ok(s.clone()),
-            calamine::DataType::Empty => Ok("".to_string()),
+            calamine::DataType::String(s) => Ok(Some(s.clone())),
+            calamine::DataType::Empty => Ok(Some("".to_string())),
+            // The last column may contain the count in the ESS format -> drop it in this case.
+            calamine::DataType::Float(_) if is_last_column => Ok(None),
+            calamine::DataType::Int(_) if is_last_column => Ok(None),
             _ => whatever!(
                 "TODO MSG:read_choice_calamine: could not understand cell {:?}",
                 cell
@@ -947,7 +959,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO P0"]
+    #[ignore = "TODO P1 random"]
     fn test_set_treat_blank_as_undeclared_write_in() {
         test_wrapper("test_set_treat_blank_as_undeclared_write_in");
     }
@@ -1018,7 +1030,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO P0"]
     fn uwi_cannot_win_test() {
         test_wrapper("uwi_cannot_win_test");
     }
