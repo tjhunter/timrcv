@@ -351,9 +351,7 @@ fn read_ranking_data(
     let parsed_ballots = match cfs.provider.as_str() {
         "ess" => io_ess::read_excel_file(p2, cfs).context(OpeningFileSnafu { root_path })?,
         "cdf" => io_cdf::read_json(p2).context(OpeningFileSnafu { root_path })?,
-        "dominion" => {
-            io_dominion::read_dominion(&p2, candidates).context(OpeningFileSnafu { root_path })?
-        }
+        "dominion" => io_dominion::read_dominion(&p2).context(OpeningFileSnafu { root_path })?,
         x => unimplemented!("Provider not implemented {:?}", x),
     };
     validate_ballots(&parsed_ballots, candidates, cfs, rules)
