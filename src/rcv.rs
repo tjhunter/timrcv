@@ -1,7 +1,7 @@
 use log::{debug, info, warn};
 
 use ranked_voting::*;
-use snafu::{prelude::*, ErrorCompat, Snafu};
+use snafu::{prelude::*, ErrorCompat, ResultExt, Snafu};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,17 +28,28 @@ enum BallotChoice {
 
 #[derive(Debug, Snafu)]
 pub enum RcvError {
+    #[snafu(display(""))]
+    OpeningFile {
+        source: Box<RcvError>,
+        root_path: String,
+    },
     #[snafu(display("Error opening file {path}"))]
     OpeningExcel {
         source: calamine::XlsxError,
         path: String,
     },
+
     #[snafu(display(""))]
     EmptyExcel {},
+    #[snafu(display(""))]
+    ExcelWrongCellType { lineno: u64, content: String },
+    #[snafu(display(""))]
+    CdfParsingJson {},
     #[snafu(display(""))]
     OpeningJson { source: std::io::Error },
     #[snafu(display(""))]
     ParsingJson { source: serde_json::Error },
+
     #[snafu(display(""))]
     ParsingJsonNumber {},
     #[snafu(display(""))]
@@ -56,6 +67,7 @@ pub enum RcvError {
 }
 
 type RcvResult<T> = Result<T, RcvError>;
+type BRcvResult<T> = Result<T, Box<RcvError>>;
 
 fn result_stats_to_json(rs: &VotingResult) -> Vec<JSValue> {
     let mut l: Vec<JSValue> = Vec::new();
@@ -189,7 +201,7 @@ pub mod config_reader {
         #[serde(rename = "tiebreakMode")]
         pub tiebreak_mode: String,
         #[serde(rename = "overvoteRule")]
-        pub overvote_rule: String,
+        pub _overvote_rule: String,
         #[serde(rename = "winnerElectionMode")]
         pub winner_election_mode: String,
         #[serde(rename = "randomSeed")]
@@ -204,6 +216,23 @@ pub mod config_reader {
         pub batch_elimination: Option<bool>,
         #[serde(rename = "exhaustOnDuplicateCandidate")]
         pub exhaust_on_duplicate_candidate: Option<bool>,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone)]
+    pub enum OverVoteRule {
+        ExhaustImmediately,
+        AlwaysSkipToNextRank,
+    }
+
+    impl RcvRules {
+        pub fn overvote_rule(&self) -> RcvResult<OverVoteRule> {
+            match self._overvote_rule.as_str() {
+                "exhaustImmediately" => Ok(OverVoteRule::ExhaustImmediately),
+                "alwaysSkipToNextRank" => Ok(OverVoteRule::AlwaysSkipToNextRank),
+                "invalidOption" => whatever!("overvote rule is an invalid option for this contest"),
+                _ => whatever!("unknown overvote rule: {}", self._overvote_rule),
+            }
+        }
     }
 
     #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
@@ -269,7 +298,161 @@ pub struct ParsedBallot {
     // TODO: add filename?
     pub id: Option<String>,
     pub count: Option<u64>,
-    pub choices: Vec<String>,
+    pub choices: Vec<Vec<String>>,
+}
+
+pub mod cdf_json_reader {
+    use snafu::OptionExt;
+
+    use crate::rcv::*;
+    use std::collections::HashMap;
+
+    pub fn read_json(path: String) -> BRcvResult<Vec<ParsedBallot>> {
+        let contents = fs::read_to_string(path).context(OpeningJsonSnafu {})?;
+
+        let cvrr: CastVoteRecordReport =
+            serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?;
+
+        // Mapping from id to candidate name
+        let mut candidateids_mapping: HashMap<String, String> = HashMap::new();
+        let mut candidate_contest_mapping: HashMap<String, String> = HashMap::new();
+        let e = cvrr.election.get(0).context(CdfParsingJsonSnafu {})?;
+        for c in e.contests.iter() {
+            for cs in c.contest_selection.iter() {
+                for cid in cs.candidate_ids.iter() {
+                    candidate_contest_mapping
+                        .insert(cid.clone(), cs.candidate_selection_id.clone());
+                }
+            }
+        }
+        for c in e.candidates.iter() {
+            let contest_id = candidate_contest_mapping
+                .get(&c.candidate_id)
+                .context(CdfParsingJsonSnafu {})?;
+            candidateids_mapping.insert(contest_id.clone(), c.candidate_name.clone());
+        }
+
+        let mut ballots: Vec<ParsedBallot> = Vec::new();
+        for cvr in cvrr.cvr.iter() {
+            for snap in cvr.snapshots.iter() {
+                for contest in snap.contests.iter() {
+                    let mut num_votes: Vec<u64> = vec![];
+                    let mut ranks: Vec<(String, u64)> = vec![];
+                    for selection in contest.selection.iter() {
+                        let candidate_name = candidateids_mapping
+                            .get(&selection.selection_id)
+                            .context(CdfParsingJsonSnafu {})?;
+                        for pos in selection.positions.iter() {
+                            num_votes.push(pos.num_votes);
+                            ranks.push((candidate_name.clone(), pos.rank))
+                        }
+                    }
+                    let max_sels = ranks
+                        .iter()
+                        .map(|(_, rank)| *rank)
+                        .max()
+                        .context(CdfParsingJsonSnafu {})?;
+                    let mut choices: Vec<Vec<String>> = vec![];
+                    for _ in 1..max_sels {
+                        choices.push(vec![]);
+                    }
+                    for (cname, rank) in ranks.iter() {
+                        if let Some(elt) = choices.get_mut((rank - 1) as usize) {
+                            elt.push(cname.clone());
+                        }
+                    }
+                    // TODO: check that all the votes have the same weight
+                    let count: u64 = *num_votes.first().context(CdfParsingJsonSnafu {})?;
+                    ballots.push(ParsedBallot {
+                        id: None, // TODO
+                        count: Some(count),
+                        choices,
+                    });
+                }
+            }
+        }
+
+        debug!(
+            "read_json: candidateids_mapping: {:?}",
+            candidateids_mapping
+        );
+
+        Ok(ballots)
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    struct CVRSelectionPosition {
+        #[serde(rename = "NumberVotes")]
+        pub num_votes: u64,
+        #[serde(rename = "Rank")]
+        pub rank: u64,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    struct CVRContestSelection {
+        #[serde(rename = "ContestSelectionId")]
+        pub selection_id: String,
+        #[serde(rename = "SelectionPosition")]
+        pub positions: Vec<CVRSelectionPosition>,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    struct CVRContest {
+        #[serde(rename = "CVRContestSelection")]
+        pub selection: Vec<CVRContestSelection>,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    struct CVRSnapshot {
+        #[serde(rename = "CVRContest")]
+        pub contests: Vec<CVRContest>,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    struct Cvr {
+        #[serde(rename = "BallotPrePrintedId")]
+        pub ballot_id: String,
+        #[serde(rename = "CVRSnapshot")]
+        pub snapshots: Vec<CVRSnapshot>,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    struct Candidate {
+        #[serde(rename = "@id")]
+        pub candidate_id: String,
+        #[serde(rename = "Name")]
+        pub candidate_name: String,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    struct CandidateSelection {
+        #[serde(rename = "@id")]
+        pub candidate_selection_id: String,
+        #[serde(rename = "CandidateIds")]
+        pub candidate_ids: Vec<String>,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    struct Contest {
+        #[serde(rename = "ContestSelection")]
+        pub contest_selection: Vec<CandidateSelection>,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    struct Election {
+        #[serde(rename = "Candidate")]
+        pub candidates: Vec<Candidate>,
+        #[serde(rename = "Contest")]
+        pub contests: Vec<Contest>,
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+    struct CastVoteRecordReport {
+        #[serde(rename = "Election")]
+        election: Vec<Election>,
+        #[serde(rename = "CVR")]
+        cvr: Vec<Cvr>,
+    }
 }
 
 pub mod ess_reader {
@@ -278,7 +461,7 @@ pub mod ess_reader {
     use crate::rcv::*;
     use std::collections::HashSet;
 
-    pub fn read_excel_file(path: String, cfs: &FileSource) -> RcvResult<Vec<ParsedBallot>> {
+    pub fn read_excel_file(path: String, cfs: &FileSource) -> BRcvResult<Vec<ParsedBallot>> {
         let p = path.clone();
         let mut workbook: Xlsx<_> =
             open_workbook(p).context(OpeningExcelSnafu { path: path.clone() })?;
@@ -295,7 +478,7 @@ pub mod ess_reader {
         // TODO check for correctness
         iter.next();
         let mut res: Vec<ParsedBallot> = Vec::new();
-        for row in iter {
+        for (idx, row) in iter.enumerate() {
             debug!("workbook: {:?}", row);
             // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
             let choices = &row[start_range..];
@@ -314,14 +497,18 @@ pub mod ess_reader {
                 calamine::DataType::Float(f) => Some(*f as u64),
                 calamine::DataType::Int(i) => Some(*i as u64),
                 calamine::DataType::String(_) => None,
+                calamine::DataType::Empty => None,
                 _ => {
-                    whatever!("wrong type")
+                    return Err(Box::new(RcvError::ExcelWrongCellType {
+                        lineno: (idx + 2) as u64,
+                        content: format!("{:?}", last_elt),
+                    }));
                 }
             };
             res.push(ParsedBallot {
                 id: None,
                 count,
-                choices: cs,
+                choices: vec![cs],
             });
         }
         Ok(res)
@@ -469,13 +656,14 @@ fn read_ranking_data(
     candidates: &[RcvCandidate],
     rules: &RcvRules,
 ) -> RcvResult<Vec<ranked_voting::Vote>> {
-    let p: PathBuf = [root_path, cfs.file_path.clone()].iter().collect();
+    let p: PathBuf = [root_path.clone(), cfs.file_path.clone()].iter().collect();
     let p2 = p.as_path().display().to_string();
     info!("Attempting to read rank file {:?}", p2);
     let parsed_ballots = match cfs.provider.as_str() {
-        "ess" => ess_reader::read_excel_file(p2, cfs),
+        "ess" => ess_reader::read_excel_file(p2, cfs).context(OpeningFileSnafu { root_path })?,
+        "cdf" => cdf_json_reader::read_json(p2).context(OpeningFileSnafu { root_path })?,
         x => unimplemented!("Provider not implemented {:?}", x),
-    }?;
+    };
     validate_ballots(&parsed_ballots, candidates, cfs, rules)
 }
 
@@ -485,6 +673,7 @@ fn validate_ballots(
     source: &FileSource,
     _rules: &RcvRules,
 ) -> RcvResult<Vec<Vote>> {
+    let overvote_rule = _rules.overvote_rule()?;
     let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
     let mut res: Vec<Vote> = Vec::new();
 
@@ -495,24 +684,26 @@ fn validate_ballots(
         let mut choices: Vec<BallotChoice> = Vec::new();
 
         for s in pb.choices.iter() {
-            let res: BallotChoice = match s.clone().as_str() {
-                c if candidate_names.contains(c) => BallotChoice::Candidate(c.to_string()),
-                "UWI" => BallotChoice::UndeclaredWriteIn("".to_string()),
-                "" if treat_blank_as_undeclared_write_in => {
+            let res: BallotChoice = match &s[..] {
+                [] => BallotChoice::Undervote,
+                [_, _, ..] => BallotChoice::Overvote,
+                [c] if candidate_names.contains(c) => BallotChoice::Candidate(c.to_string()),
+                [c] if c == "UWI" => BallotChoice::UndeclaredWriteIn("".to_string()),
+                [c] if c.is_empty() && treat_blank_as_undeclared_write_in => {
                     BallotChoice::UndeclaredWriteIn("".to_string())
                 }
-                "" => BallotChoice::Undervote,
-                c if source.undervote_label == Some(c.to_string()) => BallotChoice::Undervote,
-                c if source.overvote_label == Some(c.to_string()) => BallotChoice::Overvote,
-                _ => {
+                [c] if c.is_empty() => BallotChoice::Undervote,
+                [c] if source.undervote_label == Some(c.to_string()) => BallotChoice::Undervote,
+                [c] if source.overvote_label == Some(c.to_string()) => BallotChoice::Overvote,
+                [c] => {
                     if let Some(delim) = source.overvote_delimiter.clone() {
                         if s.contains(&delim) {
                             BallotChoice::Overvote
                         } else {
-                            BallotChoice::UndeclaredWriteIn(s.clone())
+                            BallotChoice::UndeclaredWriteIn(c.clone())
                         }
                     } else {
-                        BallotChoice::UndeclaredWriteIn(s.clone())
+                        BallotChoice::UndeclaredWriteIn(c.clone())
                     }
                 }
             };
@@ -535,7 +726,12 @@ fn validate_ballots(
 
         // Default of 1 if not specified
         let count = pb.count.unwrap_or(1);
-        if count > 0 && !candidates.is_empty() {
+
+        let contains_overvote = choices.iter().any(|x| matches!(x, BallotChoice::Overvote));
+        let remove_for_overvote =
+            contains_overvote && overvote_rule != OverVoteRule::ExhaustImmediately;
+
+        if count > 0 && !candidates.is_empty() && !remove_for_overvote {
             res.push(Vote { candidates, count });
         }
     }
@@ -812,9 +1008,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "TODO P2 exhaustIfMultipleContinuing"]
     fn exhaust_if_multiple_continuing() {
-        // TODO P1 better input management
         test_wrapper("exhaust_if_multiple_continuing");
     }
 
@@ -856,9 +1051,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO P1"]
+    #[ignore = "TODO P2 reference output contains empty UWIs"]
     fn missing_precinct_example() {
-        // TODO P1
         test_wrapper("missing_precinct_example");
     }
 

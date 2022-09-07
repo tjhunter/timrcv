@@ -132,11 +132,14 @@ pub fn run_voting_stats(
     let checked_votes = cr.votes;
     debug!("Checked votes: {:?}", checked_votes);
     let all_candidates = cr.candidates;
-    info!(
-        "Processing {:?} aggregated votes, candidates: {:?}",
-        checked_votes.len(),
-        all_candidates
-    );
+    {
+        info!("Processing {:?} aggregated votes", checked_votes.len());
+        let mut sorted_candidates: Vec<&(String, CandidateId)> = all_candidates.iter().collect();
+        sorted_candidates.sort_by_key(|p| p.1);
+        for p in sorted_candidates.iter() {
+            info!("Candidate: {}: {}", p.1 .0, p.0);
+        }
+    }
 
     let mut initial_count: VoteCount = VoteCount::EMPTY;
     for v in checked_votes.iter() {
@@ -149,7 +152,8 @@ pub fn run_voting_stats(
         .map(|(cname, cid)| (*cid, cname.clone()))
         .collect();
 
-    let mut cur_candidates: Vec<(String, CandidateId)> = all_candidates;
+    // The candidates that are still running, in sorted order as defined by input.
+    let mut cur_sorted_candidates: Vec<(String, CandidateId)> = all_candidates;
     let mut cur_votes: Vec<VoteInternal> = checked_votes;
     let mut cur_stats: Vec<Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>> =
         Vec::new();
@@ -157,25 +161,38 @@ pub fn run_voting_stats(
     // TODO: better management of the number of iterations
     while cur_stats.iter().len() < 10000 {
         let round_id = (cur_stats.iter().len() + 1) as u32;
-        let round_res = run_one_round(&cur_votes, rules, &cur_candidates, round_id)?;
+        info!(
+            "Round id: {:?} cur_candidates: {:?}",
+            round_id, cur_sorted_candidates
+        );
+        let round_res = run_one_round(&cur_votes, rules, &cur_sorted_candidates, round_id)?;
         let stats = round_res.stats.clone();
         info!("Round id: {:?} stats: {:?}", round_id, round_res.stats);
         cur_votes = round_res.votes;
         cur_stats.push(round_res.stats);
-        let survivors: Vec<(String, CandidateId)> = stats
+
+        // Survivors are described in candidate order.
+        let mut survivors: Vec<(String, CandidateId)> = Vec::new();
+        for (s, cid) in cur_sorted_candidates.iter() {
+            // Has this candidate been marked as eliminated? Skip it
+            let is_eliminated = stats.iter().any(|(cid2, _, s)| {
+                matches!(s, RoundCandidateStatusInternal::Eliminated(_, _) if *cid == *cid2)
+            });
+            if !is_eliminated {
+                survivors.push((s.clone(), *cid));
+            }
+        }
+        // Invariant: the number of candidates decreased or all the candidates are winners
+        let all_survivors_winners = stats
             .iter()
-            .filter_map(|(cid, _, s)| match s {
-                RoundCandidateStatusInternal::Eliminated(_, _) => None,
-                _ => Some((candidates_by_id.get(cid).unwrap().clone(), *cid)),
-            })
-            .collect();
+            .all(|(_, _, s)| matches!(s, RoundCandidateStatusInternal::Elected));
         assert!(
-            survivors.len() < cur_candidates.len(),
+            all_survivors_winners || (survivors.len() < cur_sorted_candidates.len()),
             "The number of candidates did not decrease: {:?} -> {:?}",
-            cur_candidates,
+            cur_sorted_candidates,
             survivors
         );
-        cur_candidates = survivors;
+        cur_sorted_candidates = survivors;
 
         // Check end. For now, simply check that we have a winner.
         // TODO check that everyone is a winner or eliminated.
@@ -453,7 +470,7 @@ fn find_eliminated_candidates(
     }
     // No candidate to eliminate.
     // TODO check the conditions for this to happen.
-    unimplemented!("No candidate to eliminate");
+    unimplemented!("find_eliminated_candidates: No candidate to eliminate");
 }
 
 fn find_eliminated_candidates_batch(
@@ -493,16 +510,19 @@ fn find_eliminated_candidates_batch(
         large_gap_idx
     );
 
+    // The idx == 0 element is not relevant because the previous cumulative count was zero.
     if let Some((idx, _)) = large_gap_idx {
-        let res = sorted_tally.iter().map(|(cid, _)| *cid).take(idx).collect();
-        debug!(
-            "find_eliminated_candidates_batch: found a batch to eliminate: {:?}",
-            res
-        );
-        Some(res)
-    } else {
-        None
+        if idx > 0 {
+            let res = sorted_tally.iter().map(|(cid, _)| *cid).take(idx).collect();
+            debug!(
+                "find_eliminated_candidates_batch: found a batch to eliminate: {:?}",
+                res
+            );
+            return Some(res);
+        }
     }
+    debug!("find_eliminated_candidates_batch: no candidates to eliminate");
+    None
 }
 
 // Flag to indicate if a tiebreak happened.
@@ -528,7 +548,7 @@ fn find_eliminated_candidates_single(
     // No need to eliminate candidates.
     if tally.len() == 1 {
         debug!(
-            "Only one candidate left in tally, no one to eliminate: {:?}",
+            "find_eliminated_candidates_single: Only one candidate left in tally, no one to eliminate: {:?}",
             tally
         );
         return None;
@@ -542,7 +562,10 @@ fn find_eliminated_candidates_single(
         .filter_map(|(cid, vc)| if *vc <= min_count { Some(cid) } else { None })
         .cloned()
         .collect();
-    debug!("all_smallest: {:?}", all_smallest);
+    debug!(
+        "find_eliminated_candidates_single: all_smallest: {:?}",
+        all_smallest
+    );
     assert!(!all_smallest.is_empty());
 
     // No tiebreak, the logic below is not relevant.
@@ -553,16 +576,24 @@ fn find_eliminated_candidates_single(
     // Look at the tiebreak mode:
     let mut sorted_candidates: Vec<CandidateId> = match tiebreak {
         TieBreakMode::UseCandidateOrder => {
+            debug!(
+                "find_eliminated_candidates_single: candidate_names: {:?}",
+                candidate_names
+            );
             let candidate_order: HashMap<CandidateId, usize> = candidate_names
                 .iter()
                 .enumerate()
                 .map(|(idx, (_, cid))| (*cid, idx))
                 .collect();
+            debug!(
+                "find_eliminated_candidates_single: candidate_order: {:?}",
+                candidate_order
+            );
             let mut res = all_smallest;
             res.sort_by_key(|cid| candidate_order.get(cid).unwrap());
             // For loser selection, the selection is done in reverse order according to the reference implementation.
             res.reverse();
-            debug!("sorted candidates in elimination queue using tiebreak mode usecandidateorder: {:?}", res);
+            debug!("find_eliminated_candidates_single: sorted candidates in elimination queue using tiebreak mode usecandidateorder: {:?}", res);
             res
         }
         TieBreakMode::Random(seed) => {
@@ -584,7 +615,7 @@ fn find_eliminated_candidates_single(
                 .collect();
             let res = candidate_permutation_crypto(&cand_with_names, seed, num_round);
             debug!(
-                "sorted candidates in elimination queue using tiebreak mode random: {:?}",
+                "find_eliminated_candidates_single: sorted candidates in elimination queue using tiebreak mode random: {:?}",
                 res
             );
             res
@@ -716,6 +747,7 @@ fn checks(
             .filter_map(|c| candidates.get(&c.name).map(|cid| (c.name.clone(), *cid)))
             .collect(),
     };
+    debug!("checks: ordered_candidates {:?}", ordered_candidates);
     // If some UWIs were also found, add it to the list of candidates.
     if let Some(idx) = candidates.get(UWI) {
         ordered_candidates.push((UWI.to_string(), *idx));
