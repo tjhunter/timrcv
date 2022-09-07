@@ -16,6 +16,9 @@ use std::collections::HashSet;
 use text_diff::print_diff;
 
 use crate::rcv::config_reader::*;
+pub mod io_cdf;
+pub mod io_dominion;
+pub mod io_ess;
 
 // All the possible choices that can be made on a ballot
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
@@ -45,6 +48,12 @@ pub enum RcvError {
     ExcelWrongCellType { lineno: u64, content: String },
     #[snafu(display(""))]
     CdfParsingJson {},
+    #[snafu(display(""))]
+    DominionParsingJson {},
+    #[snafu(display(""))]
+    DominionMissingCandidateId { candidate_name: String },
+    #[snafu(display(""))]
+    DominionParsingCandidateId { source: std::num::ParseIntError },
     #[snafu(display(""))]
     OpeningJson { source: std::io::Error },
     #[snafu(display(""))]
@@ -301,326 +310,6 @@ pub struct ParsedBallot {
     pub choices: Vec<Vec<String>>,
 }
 
-pub mod cdf_json_reader {
-    use snafu::OptionExt;
-
-    use crate::rcv::*;
-    use std::collections::HashMap;
-
-    pub fn read_json(path: String) -> BRcvResult<Vec<ParsedBallot>> {
-        let contents = fs::read_to_string(path).context(OpeningJsonSnafu {})?;
-
-        let cvrr: CastVoteRecordReport =
-            serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?;
-
-        // Mapping from id to candidate name
-        let mut candidateids_mapping: HashMap<String, String> = HashMap::new();
-        let mut candidate_contest_mapping: HashMap<String, String> = HashMap::new();
-        let e = cvrr.election.get(0).context(CdfParsingJsonSnafu {})?;
-        for c in e.contests.iter() {
-            for cs in c.contest_selection.iter() {
-                for cid in cs.candidate_ids.iter() {
-                    candidate_contest_mapping
-                        .insert(cid.clone(), cs.candidate_selection_id.clone());
-                }
-            }
-        }
-        for c in e.candidates.iter() {
-            let contest_id = candidate_contest_mapping
-                .get(&c.candidate_id)
-                .context(CdfParsingJsonSnafu {})?;
-            candidateids_mapping.insert(contest_id.clone(), c.candidate_name.clone());
-        }
-
-        let mut ballots: Vec<ParsedBallot> = Vec::new();
-        for cvr in cvrr.cvr.iter() {
-            for snap in cvr.snapshots.iter() {
-                for contest in snap.contests.iter() {
-                    let mut num_votes: Vec<u64> = vec![];
-                    let mut ranks: Vec<(String, u64)> = vec![];
-                    for selection in contest.selection.iter() {
-                        let candidate_name = candidateids_mapping
-                            .get(&selection.selection_id)
-                            .context(CdfParsingJsonSnafu {})?;
-                        for pos in selection.positions.iter() {
-                            num_votes.push(pos.num_votes);
-                            ranks.push((candidate_name.clone(), pos.rank))
-                        }
-                    }
-                    let max_sels = ranks
-                        .iter()
-                        .map(|(_, rank)| *rank)
-                        .max()
-                        .context(CdfParsingJsonSnafu {})?;
-                    let mut choices: Vec<Vec<String>> = vec![];
-                    for _ in 1..max_sels {
-                        choices.push(vec![]);
-                    }
-                    for (cname, rank) in ranks.iter() {
-                        if let Some(elt) = choices.get_mut((rank - 1) as usize) {
-                            elt.push(cname.clone());
-                        }
-                    }
-                    // TODO: check that all the votes have the same weight
-                    let count: u64 = *num_votes.first().context(CdfParsingJsonSnafu {})?;
-                    ballots.push(ParsedBallot {
-                        id: None, // TODO
-                        count: Some(count),
-                        choices,
-                    });
-                }
-            }
-        }
-
-        debug!(
-            "read_json: candidateids_mapping: {:?}",
-            candidateids_mapping
-        );
-
-        Ok(ballots)
-    }
-
-    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-    struct CVRSelectionPosition {
-        #[serde(rename = "NumberVotes")]
-        pub num_votes: u64,
-        #[serde(rename = "Rank")]
-        pub rank: u64,
-    }
-
-    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-    struct CVRContestSelection {
-        #[serde(rename = "ContestSelectionId")]
-        pub selection_id: String,
-        #[serde(rename = "SelectionPosition")]
-        pub positions: Vec<CVRSelectionPosition>,
-    }
-
-    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-    struct CVRContest {
-        #[serde(rename = "CVRContestSelection")]
-        pub selection: Vec<CVRContestSelection>,
-    }
-
-    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-    struct CVRSnapshot {
-        #[serde(rename = "CVRContest")]
-        pub contests: Vec<CVRContest>,
-    }
-
-    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-    struct Cvr {
-        #[serde(rename = "BallotPrePrintedId")]
-        pub ballot_id: String,
-        #[serde(rename = "CVRSnapshot")]
-        pub snapshots: Vec<CVRSnapshot>,
-    }
-
-    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-    struct Candidate {
-        #[serde(rename = "@id")]
-        pub candidate_id: String,
-        #[serde(rename = "Name")]
-        pub candidate_name: String,
-    }
-
-    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-    struct CandidateSelection {
-        #[serde(rename = "@id")]
-        pub candidate_selection_id: String,
-        #[serde(rename = "CandidateIds")]
-        pub candidate_ids: Vec<String>,
-    }
-
-    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-    struct Contest {
-        #[serde(rename = "ContestSelection")]
-        pub contest_selection: Vec<CandidateSelection>,
-    }
-
-    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-    struct Election {
-        #[serde(rename = "Candidate")]
-        pub candidates: Vec<Candidate>,
-        #[serde(rename = "Contest")]
-        pub contests: Vec<Contest>,
-    }
-
-    #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
-    struct CastVoteRecordReport {
-        #[serde(rename = "Election")]
-        election: Vec<Election>,
-        #[serde(rename = "CVR")]
-        cvr: Vec<Cvr>,
-    }
-}
-
-pub mod ess_reader {
-    use snafu::OptionExt;
-
-    use crate::rcv::*;
-    use std::collections::HashSet;
-
-    pub fn read_excel_file(path: String, cfs: &FileSource) -> BRcvResult<Vec<ParsedBallot>> {
-        let p = path.clone();
-        let mut workbook: Xlsx<_> =
-            open_workbook(p).context(OpeningExcelSnafu { path: path.clone() })?;
-        let wrange = workbook
-            .worksheet_range_at(0)
-            .context(EmptyExcelSnafu {})?
-            .context(OpeningExcelSnafu { path })?;
-
-        let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
-        debug!("header: {:?}", header);
-        let start_range = cfs.first_vote_column_index()?;
-
-        let mut iter = wrange.rows();
-        // TODO check for correctness
-        iter.next();
-        let mut res: Vec<ParsedBallot> = Vec::new();
-        for (idx, row) in iter.enumerate() {
-            debug!("workbook: {:?}", row);
-            // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
-            let choices = &row[start_range..];
-            let mut cs: Vec<String> = Vec::new();
-            let num_row_choices = choices.len();
-            for (idx, elt) in choices.iter().enumerate() {
-                let bco = read_choice_calamine2(elt, idx == num_row_choices - 1)?;
-                if let Some(bc) = bco {
-                    cs.push(bc);
-                }
-            }
-            // Count: look for it at the last cell.
-            let last_elt = choices.last().context(EmptyExcelSnafu {})?;
-            // TODO implement count
-            let count: Option<u64> = match last_elt {
-                calamine::DataType::Float(f) => Some(*f as u64),
-                calamine::DataType::Int(i) => Some(*i as u64),
-                calamine::DataType::String(_) => None,
-                calamine::DataType::Empty => None,
-                _ => {
-                    return Err(Box::new(RcvError::ExcelWrongCellType {
-                        lineno: (idx + 2) as u64,
-                        content: format!("{:?}", last_elt),
-                    }));
-                }
-            };
-            res.push(ParsedBallot {
-                id: None,
-                count,
-                choices: vec![cs],
-            });
-        }
-        Ok(res)
-    }
-
-    fn read_choice_calamine2(
-        cell: &calamine::DataType,
-        is_last_column: bool,
-    ) -> RcvResult<Option<String>> {
-        match cell {
-            calamine::DataType::String(s) => Ok(Some(s.clone())),
-            calamine::DataType::Empty => Ok(Some("".to_string())),
-            // The last column may contain the count in the ESS format -> drop it in this case.
-            calamine::DataType::Float(_) if is_last_column => Ok(None),
-            calamine::DataType::Int(_) if is_last_column => Ok(None),
-            _ => whatever!(
-                "TODO MSG:read_choice_calamine: could not understand cell {:?}",
-                cell
-            ),
-        }
-    }
-
-    pub fn read_excel_file0(
-        path: String,
-        cfs: &FileSource,
-        candidates: &[RcvCandidate],
-        rules: &RcvRules,
-    ) -> RcvResult<Vec<ranked_voting::Vote>> {
-        let p = path.clone();
-        let mut workbook: Xlsx<_> =
-            open_workbook(p).context(OpeningExcelSnafu { path: path.clone() })?;
-        let wrange = workbook
-            .worksheet_range_at(0)
-            .context(EmptyExcelSnafu {})?
-            .context(OpeningExcelSnafu { path })?;
-
-        // .ok_or(CError::Msg("Missing first sheet"))??;
-        let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
-        debug!("header: {:?}", header);
-        let start_range = cfs.first_vote_column_index()?;
-
-        let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
-
-        let mut iter = wrange.rows();
-        // TODO check for correctness
-        iter.next();
-        let mut res: Vec<Vote> = Vec::new();
-        for row in iter {
-            debug!("workbook: {:?}", row);
-            // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
-            let choices = &row[start_range..];
-            let mut cs: Vec<BallotChoice> = Vec::new();
-            for elt in choices {
-                let bc = read_choice_calamine(elt, &candidate_names, cfs)?;
-                cs.push(bc)
-            }
-            // TODO implement count
-            let count: u64 = match None {
-                Some(calamine::DataType::Float(f)) => f as u64,
-                Some(calamine::DataType::Int(i)) => i as u64,
-                Some(_) => {
-                    whatever!("wrong type")
-                }
-                None => 1,
-            };
-            if let Some(v) = create_vote(&"NO ID".to_string(), count, &cs, rules)? {
-                res.push(v);
-            }
-        }
-        Ok(res)
-    }
-
-    fn read_choice_calamine(
-        cell: &calamine::DataType,
-        candidates: &HashSet<String>,
-        source_setting: &FileSource,
-    ) -> RcvResult<BallotChoice> {
-        match cell {
-            calamine::DataType::String(s) if candidates.contains(s) => {
-                Ok(BallotChoice::Candidate(s.clone()))
-            }
-            calamine::DataType::String(s) if s == "UWI" => {
-                Ok(BallotChoice::UndeclaredWriteIn("".to_string()))
-            }
-            calamine::DataType::String(s)
-                if s.is_empty()
-                    && source_setting
-                        .treat_blank_as_undeclared_write_in
-                        .unwrap_or(false) =>
-            {
-                Ok(BallotChoice::UndeclaredWriteIn("".to_string()))
-            }
-            calamine::DataType::String(s) if source_setting.undervote_label == Some(s.clone()) => {
-                Ok(BallotChoice::Undervote)
-            }
-            calamine::DataType::String(s) => {
-                if let Some(delim) = source_setting.overvote_delimiter.clone() {
-                    if s.contains(&delim) {
-                        return Ok(BallotChoice::Overvote);
-                    }
-                }
-                whatever!("Wrong data type: {:?}", s)
-            }
-            calamine::DataType::Empty => Ok(BallotChoice::Undervote),
-            _ => whatever!(
-                "TODO MSG:read_choice_calamine: could not understand cell {:?}",
-                cell
-            ),
-        }
-    }
-}
-
 // TODO: add policy on how to treat the bad ballots.
 fn create_vote(
     ballot_id: &String,
@@ -660,8 +349,11 @@ fn read_ranking_data(
     let p2 = p.as_path().display().to_string();
     info!("Attempting to read rank file {:?}", p2);
     let parsed_ballots = match cfs.provider.as_str() {
-        "ess" => ess_reader::read_excel_file(p2, cfs).context(OpeningFileSnafu { root_path })?,
-        "cdf" => cdf_json_reader::read_json(p2).context(OpeningFileSnafu { root_path })?,
+        "ess" => io_ess::read_excel_file(p2, cfs).context(OpeningFileSnafu { root_path })?,
+        "cdf" => io_cdf::read_json(p2).context(OpeningFileSnafu { root_path })?,
+        "dominion" => {
+            io_dominion::read_dominion(&p2, candidates).context(OpeningFileSnafu { root_path })?
+        }
         x => unimplemented!("Provider not implemented {:?}", x),
     };
     validate_ballots(&parsed_ballots, candidates, cfs, rules)
@@ -1109,55 +801,46 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO P2 provider cdf"]
     fn test_set_0_skipped_first_choice() {
         test_wrapper("test_set_0_skipped_first_choice");
     }
 
     #[test]
-    #[ignore = "TODO P2 provider cdf"]
     fn test_set_1_exhaust_at_overvote() {
         test_wrapper("test_set_1_exhaust_at_overvote");
     }
 
     #[test]
-    #[ignore = "TODO P2 provider cdf"]
     fn test_set_2_overvote_skip_to_next() {
         test_wrapper("test_set_2_overvote_skip_to_next");
     }
 
     #[test]
-    #[ignore = "TODO P2 provider cdf"]
     fn test_set_3_skipped_choice_exhaust() {
         test_wrapper("test_set_3_skipped_choice_exhaust");
     }
 
     #[test]
-    #[ignore = "TODO P2 provider cdf"]
     fn test_set_4_skipped_choice_next() {
         test_wrapper("test_set_4_skipped_choice_next");
     }
 
     #[test]
-    #[ignore = "TODO P2 provider cdf"]
     fn test_set_5_two_skipped_choice_exhaust() {
         test_wrapper("test_set_5_two_skipped_choice_exhaust");
     }
 
     #[test]
-    #[ignore = "TODO P2 provider cdf"]
     fn test_set_6_duplicate_exhaust() {
         test_wrapper("test_set_6_duplicate_exhaust");
     }
 
     #[test]
-    #[ignore = "TODO P2 provider cdf"]
     fn test_set_7_duplicate_skip_to_next() {
         test_wrapper("test_set_7_duplicate_skip_to_next");
     }
 
     #[test]
-    #[ignore = "TODO P2 provider cdf"]
     fn test_set_8_multi_cdf() {
         test_wrapper("test_set_8_multi_cdf");
     }
