@@ -54,17 +54,17 @@ impl RankedChoice {
         };
         choices.extend(self.rest.clone());
 
-        // See if the current top candidate is present multiple time.
-        if let Choice::Filled(cid_first) = self.first {
-            let has_duplicates = self
-                .rest
-                .iter()
-                .any(|&choice| matches!(choice, Choice::Filled(cid) if cid == cid_first));
+        // // See if the current top candidate is present multiple time.
+        // if let Choice::Filled(cid_first) = self.first {
+        //     let has_duplicates = self
+        //         .rest
+        //         .iter()
+        //         .any(|&choice| matches!(choice, Choice::Filled(cid) if cid == cid_first));
 
-            if duplicate_policy == DuplicateCandidateMode::Exhaust && has_duplicates {
-                return None;
-            }
-        }
+        //     if duplicate_policy == DuplicateCandidateMode::Exhaust && has_duplicates {
+        //         return None;
+        //     }
+        // }
 
         let rem_choices: Vec<Choice> = choices
             .iter()
@@ -73,7 +73,7 @@ impl RankedChoice {
                 if let Choice::Filled(cid) = choice {
                     !eliminated.contains(cid)
                 } else {
-                    true
+                    **choice != Choice::Blank
                 }
             })
             .cloned()

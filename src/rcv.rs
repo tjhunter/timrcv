@@ -393,7 +393,7 @@ fn validate_ballots(
                 }
                 [c] => {
                     if let Some(delim) = source.overvote_delimiter.clone() {
-                        if s.contains(&delim) {
+                        if c.contains(&delim) {
                             BallotChoice::Overvote
                         } else {
                             BallotChoice::UndeclaredWriteIn
