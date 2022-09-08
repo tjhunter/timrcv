@@ -3,6 +3,8 @@ use snafu::OptionExt;
 use crate::rcv::*;
 use std::collections::HashSet;
 
+use std::path::Path;
+
 pub fn read_excel_file(path: String, cfs: &FileSource) -> BRcvResult<Vec<ParsedBallot>> {
     let p = path.clone();
     let mut workbook: Xlsx<_> =
@@ -10,26 +12,37 @@ pub fn read_excel_file(path: String, cfs: &FileSource) -> BRcvResult<Vec<ParsedB
     let wrange = workbook
         .worksheet_range_at(0)
         .context(EmptyExcelSnafu {})?
-        .context(OpeningExcelSnafu { path })?;
+        .context(OpeningExcelSnafu { path: path.clone() })?;
+
+    // TODO: no unwrap
+    // The filename to add as a ballot id
+    let simplified_file_name = Path::new(path.as_str())
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap();
 
     let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
-    debug!("header: {:?}", header);
+    debug!("read_excel_file: header: {:?}", header);
     let start_range = cfs.first_vote_column_index()?;
+    debug!("read_excel_file: start_range: {:?}", start_range);
 
     let mut iter = wrange.rows();
     // TODO check for correctness
     iter.next();
     let mut res: Vec<ParsedBallot> = Vec::new();
     for (idx, row) in iter.enumerate() {
-        debug!("workbook: {:?}", row);
+        debug!("read_excel_file: workbook: {:?}", row);
         // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
         let choices = &row[start_range..];
-        let mut cs: Vec<String> = Vec::new();
+        let mut cs: Vec<Vec<String>> = Vec::new();
         let num_row_choices = choices.len();
         for (idx, elt) in choices.iter().enumerate() {
             let bco = read_choice_calamine2(elt, idx == num_row_choices - 1)?;
             if let Some(bc) = bco {
-                cs.push(bc);
+                // TODO: justify why the whitespaces are removed.
+                // This is required for test 2015_portland_mayor.
+                cs.push(vec![bc.trim().to_string()]);
             }
         }
         // Count: look for it at the last cell.
@@ -47,11 +60,13 @@ pub fn read_excel_file(path: String, cfs: &FileSource) -> BRcvResult<Vec<ParsedB
                 }));
             }
         };
-        res.push(ParsedBallot {
-            id: None,
+        let pb = ParsedBallot {
+            id: Some(format!("{}-{:08}", simplified_file_name, idx)),
             count,
-            choices: vec![cs],
-        });
+            choices: cs,
+        };
+        debug!("read_excel_file: ballot: {:?}", pb.clone());
+        res.push(pb);
     }
     Ok(res)
 }
@@ -132,16 +147,14 @@ fn read_choice_calamine(
         calamine::DataType::String(s) if candidates.contains(s) => {
             Ok(BallotChoice::Candidate(s.clone()))
         }
-        calamine::DataType::String(s) if s == "UWI" => {
-            Ok(BallotChoice::UndeclaredWriteIn("".to_string()))
-        }
+        calamine::DataType::String(s) if s == "UWI" => Ok(BallotChoice::UndeclaredWriteIn),
         calamine::DataType::String(s)
             if s.is_empty()
                 && source_setting
                     .treat_blank_as_undeclared_write_in
                     .unwrap_or(false) =>
         {
-            Ok(BallotChoice::UndeclaredWriteIn("".to_string()))
+            Ok(BallotChoice::UndeclaredWriteIn)
         }
         calamine::DataType::String(s) if source_setting.undervote_label == Some(s.clone()) => {
             Ok(BallotChoice::Undervote)

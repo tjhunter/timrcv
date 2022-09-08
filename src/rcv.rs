@@ -24,9 +24,12 @@ pub mod io_ess;
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 enum BallotChoice {
     Candidate(String),
-    UndeclaredWriteIn(String),
+    UndeclaredWriteIn,
     Overvote,
     Undervote, // Blank vote
+    // A blank content in the vote.
+    // This is the policy with blank votes that are not clearly labeled as under- or overvotes.
+    Blank,
 }
 
 #[derive(Debug, Snafu)]
@@ -324,7 +327,7 @@ fn create_vote(
             BallotChoice::Candidate(s) => {
                 candidates.push(s.clone());
             }
-            BallotChoice::UndeclaredWriteIn(_) => {
+            BallotChoice::UndeclaredWriteIn => {
                 // TODO: this is hardcoded.
                 candidates.push("UWI".to_string());
             }
@@ -378,51 +381,71 @@ fn validate_ballots(
                 [] => BallotChoice::Undervote,
                 [_, _, ..] => BallotChoice::Overvote,
                 [c] if candidate_names.contains(c) => BallotChoice::Candidate(c.to_string()),
-                [c] if c == "UWI" => BallotChoice::UndeclaredWriteIn("".to_string()),
-                [c] if c.is_empty() && treat_blank_as_undeclared_write_in => {
-                    BallotChoice::UndeclaredWriteIn("".to_string())
-                }
-                [c] if c.is_empty() => BallotChoice::Undervote,
+                [c] if c == "UWI" => BallotChoice::UndeclaredWriteIn,
                 [c] if source.undervote_label == Some(c.to_string()) => BallotChoice::Undervote,
                 [c] if source.overvote_label == Some(c.to_string()) => BallotChoice::Overvote,
+                [c] if c.is_empty() => {
+                    if treat_blank_as_undeclared_write_in {
+                        BallotChoice::UndeclaredWriteIn
+                    } else {
+                        BallotChoice::Blank
+                    }
+                }
                 [c] => {
                     if let Some(delim) = source.overvote_delimiter.clone() {
                         if s.contains(&delim) {
                             BallotChoice::Overvote
                         } else {
-                            BallotChoice::UndeclaredWriteIn(c.clone())
+                            BallotChoice::UndeclaredWriteIn
                         }
                     } else {
-                        BallotChoice::UndeclaredWriteIn(c.clone())
+                        BallotChoice::UndeclaredWriteIn
                     }
                 }
             };
             choices.push(res);
         }
 
-        debug!("Choices for ballot {:?}: {:?}", pb.id, choices);
+        debug!(
+            "validate_ballots: Choices for ballot {:?}: {:?}",
+            pb.id, choices
+        );
 
         // Filter some of the choices.
-
-        let candidates: Vec<String> = choices
-            .iter()
-            .filter_map(|x| match x {
-                BallotChoice::Candidate(x) => Some(x.clone()),
-                BallotChoice::UndeclaredWriteIn(_) => Some(UWI.to_string()),
-                BallotChoice::Overvote => None,
-                BallotChoice::Undervote => None,
-            })
-            .collect();
+        let mut candidates: Vec<String> = vec![];
+        for c in choices.iter() {
+            match c {
+                BallotChoice::Candidate(x) => {
+                    candidates.push(x.clone());
+                }
+                BallotChoice::UndeclaredWriteIn => {
+                    candidates.push(UWI.to_string());
+                }
+                // Undervotes are discarded.
+                BallotChoice::Undervote => {}
+                BallotChoice::Overvote => {
+                    // The rest of the ballot will not be considered under this rule.
+                    if overvote_rule == OverVoteRule::ExhaustImmediately {
+                        break;
+                    }
+                }
+                BallotChoice::Blank => {
+                    // Blanks are skipped
+                }
+            }
+        }
 
         // Default of 1 if not specified
         let count = pb.count.unwrap_or(1);
 
-        let contains_overvote = choices.iter().any(|x| matches!(x, BallotChoice::Overvote));
-        let remove_for_overvote =
-            contains_overvote && overvote_rule != OverVoteRule::ExhaustImmediately;
-
-        if count > 0 && !candidates.is_empty() && !remove_for_overvote {
-            res.push(Vote { candidates, count });
+        if count > 0 && !candidates.is_empty() {
+            let v = Vote { candidates, count };
+            debug!(
+                "validate_ballots: ballot {:?}: adding vote {:?}",
+                pb.id,
+                v.clone()
+            );
+            res.push(v);
         }
     }
     Ok(res)
@@ -505,7 +528,7 @@ pub fn run_election(config_path: String, check_summary_path: Option<String>) -> 
     let config_str = fs::read_to_string(config_path.clone()).context(OpeningJsonSnafu {})?;
     let config: RcvConfig = serde_json::from_str(&config_str).context(ParsingJsonSnafu {})?;
     let config2 = config.clone();
-    info!("config: {:?}", config);
+    info!("run_election: config: {:?}", config);
 
     // Validate the rules:
     let rules = validate_rules(&config.rules)?;
@@ -526,7 +549,7 @@ pub fn run_election(config_path: String, check_summary_path: Option<String>) -> 
         data.append(&mut file_data);
     }
 
-    info!("data: {:?}", data);
+    debug!("run_election:data: {:?} vote records", data.len());
 
     let candidates: Vec<Candidate> = config
         .candidates
@@ -542,8 +565,6 @@ pub fn run_election(config_path: String, check_summary_path: Option<String>) -> 
         .collect();
 
     let res = run_voting_stats(&data, &rules, &Some(candidates));
-
-    info!("res {:?}", res);
 
     let result = match res {
         Result::Ok(x) => x,
@@ -562,7 +583,6 @@ pub fn run_election(config_path: String, check_summary_path: Option<String>) -> 
     // The reference summary, if provided for comparison
     if let Some(summary_p) = check_summary_path {
         let summary_ref = read_summary(summary_p)?;
-        info!("summary: {:?}", summary_ref);
         let pretty_js_summary_ref =
             serde_json::to_string_pretty(&summary_ref).context(ParsingJsonSnafu {})?;
         if pretty_js_summary_ref != pretty_js_stats {

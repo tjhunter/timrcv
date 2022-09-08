@@ -12,6 +12,9 @@ pub use crate::config::*;
 pub const UWI: &str = "UNDECLARED_WRITE_IN";
 const UWI_CANDIDATE_ID: CandidateId = CandidateId(0);
 
+/// A blank vote (undervote). It can be inserted to continue with the tally.
+pub const UNDERVOTE: &str = "BLANK";
+
 // **** Private structures ****
 
 type RoundId = u32;
@@ -19,10 +22,19 @@ type RoundId = u32;
 #[derive(Eq, PartialEq, Debug, Clone, Copy, Hash, Ord, PartialOrd)]
 struct CandidateId(u32);
 
+// A position in a ballot may not be filled with a candidate name, and this may still be acceptable.
+// It simply means that this ballot will not be account for this turn.
+#[derive(Eq, PartialEq, Debug, Clone, Copy, Hash, Ord, PartialOrd)]
+enum Choice {
+    Blank,
+    Filled(CandidateId),
+}
+
+// Invariant: there is at least one CandidateId in all the choices.
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 struct RankedChoice {
-    first: CandidateId,
-    rest: Vec<CandidateId>,
+    first: Choice,
+    rest: Vec<Choice>,
 }
 
 impl RankedChoice {
@@ -34,17 +46,36 @@ impl RankedChoice {
         eliminated: &HashSet<CandidateId>,
         duplicate_policy: DuplicateCandidateMode,
     ) -> Option<RankedChoice> {
-        let mut choices = vec![self.first];
+        // Remove the first vote if it is blank
+        let mut choices = if self.first == Choice::Blank {
+            vec![]
+        } else {
+            vec![self.first]
+        };
         choices.extend(self.rest.clone());
+
         // See if the current top candidate is present multiple time.
-        if duplicate_policy == DuplicateCandidateMode::Exhaust
-            && self.rest.iter().any(|&cid| cid == self.first)
-        {
-            return None;
+        if let Choice::Filled(cid_first) = self.first {
+            let has_duplicates = self
+                .rest
+                .iter()
+                .any(|&choice| matches!(choice, Choice::Filled(cid) if cid == cid_first));
+
+            if duplicate_policy == DuplicateCandidateMode::Exhaust && has_duplicates {
+                return None;
+            }
         }
-        let rem_choices: Vec<CandidateId> = choices
+
+        let rem_choices: Vec<Choice> = choices
             .iter()
-            .filter(|cid| !eliminated.contains(cid))
+            .filter(|choice| {
+                // Keep blank or non-eliminated candidates.
+                if let Choice::Filled(cid) = choice {
+                    !eliminated.contains(cid)
+                } else {
+                    true
+                }
+            })
             .cloned()
             .collect();
         match &rem_choices[..] {
@@ -130,7 +161,7 @@ pub fn run_voting_stats(
 
     let cr: CheckResult = checks(coll, candidates)?;
     let checked_votes = cr.votes;
-    debug!("Checked votes: {:?}", checked_votes);
+    debug!("run_voting_stats: Checked votes: {:?}", checked_votes.len());
     let all_candidates = cr.candidates;
     {
         info!("Processing {:?} aggregated votes", checked_votes.len());
@@ -302,9 +333,14 @@ fn run_one_round(
         tally.insert(*cid, VoteCount::EMPTY);
     }
     for v in votes.iter() {
-        if let Some(vc) = tally.get_mut(&v.candidates.first) {
-            *vc += v.count;
-        } else {
+        // DEBUG
+        if v.candidates.first == Choice::Filled(CandidateId(3)) {
+            debug!("run_one_round: {:?}", v.clone());
+        }
+        if let Choice::Filled(cid) = v.candidates.first {
+            if let Some(vc) = tally.get_mut(&cid) {
+                *vc += v.count;
+            }
         }
     }
     // let tally: HashMap<CandidateId, VoteCount> =
@@ -363,26 +399,34 @@ fn run_one_round(
                 .candidates
                 .filtered_candidate(&eliminated_candidates, rules.duplicate_candidate_mode);
             let new_first = new_rank.clone().map(|nr| nr.first);
-            let first = va.candidates.first;
 
-            match new_first {
-                None => {
-                    // The vote has been exhausted
+            match (va.candidates.first, new_first) {
+                (Choice::Blank, None) => {
+                    // Top choice was blank before and the ballot is now exhausted.
+                    // Doing nothing,
+                }
+                (Choice::Filled(first_cid), None) => {
+                    // Ballot is now exhausted. Record the exhausted vote.
                     let e = elimination_stats
-                        .entry(first)
+                        .entry(first_cid)
                         .or_insert((HashMap::new(), VoteCount::EMPTY));
                     e.1 += va.count;
                 }
-                Some(cid) if eliminated_candidates.contains(&first) => {
+                (Choice::Filled(first_cid), Some(Choice::Filled(new_first_cid)))
+                    if eliminated_candidates.contains(&first_cid) =>
+                {
+                    // Ballot has been transfered.
+                    // Record the transfer.
                     // The vote has been transfered. Record the transfer.
                     let e = elimination_stats
-                        .entry(first)
+                        .entry(first_cid)
                         .or_insert((HashMap::new(), VoteCount::EMPTY));
-                    let e2 = e.0.entry(cid).or_insert(VoteCount::EMPTY);
+                    let e2 = e.0.entry(new_first_cid).or_insert(VoteCount::EMPTY);
                     *e2 += va.count;
                 }
-                Some(_) => {
-                    // Nothing to do
+                _ => {
+                    // Nothing to do in the other cases.
+                    // TODO: check potential other situations with the blank ballots.
                 }
             }
 
@@ -678,54 +722,55 @@ fn checks(
     } else {
         reg_candidate_names = None;
     }
-    // TODO: this code can be simplified.
-    let vas: Vec<VoteInternal> = coll
-        .iter()
-        .map(|v| {
-            let cs: Vec<CandidateId> = v
-                .candidates
-                .iter()
-                .filter_map(|c| {
-                    if blacklisted_candidates.contains(c) {
-                        None
+
+    let mut vas: Vec<VoteInternal> = vec![];
+
+    for v in coll.iter() {
+        let mut choices: Vec<Choice> = vec![];
+        for c in v.candidates.iter() {
+            if blacklisted_candidates.contains(c) {
+                // Nothing to do, candidate is blacklisted.
+            } else if c.as_str() == UNDERVOTE {
+                // Undervote, push as blank.
+                choices.push(Choice::Blank);
+            } else {
+                // Normal choice, find the corresponding candidate id.
+                // Check if the name is one of a regular candidate or it should be discarded as an
+                // undeclared write in.
+                let n: String = match &reg_candidate_names {
+                    // We have been provided a list of regular candidates and this list does
+                    // not include the name of the current candidate.
+                    // Discard it as a UWI
+                    Some(c_names) if !c_names.contains(c) => UWI.to_string(),
+                    _ => c.clone(),
+                };
+                let nc = n.clone();
+                let cid: CandidateId = *candidates.entry(n).or_insert_with(|| {
+                    if nc == UWI {
+                        UWI_CANDIDATE_ID
                     } else {
-                        // Check if the name is one of a regular candidate or it should be discarded as an
-                        // undeclared write in.
-                        let n: String = match &reg_candidate_names {
-                            // We have been provided a list of regular candidates and this list does
-                            // not include the name of the current candidate.
-                            // Discard it as a UWI
-                            Some(c_names) if !c_names.contains(c) => UWI.to_string(),
-                            _ => c.clone(),
-                        };
-                        let nc = n.clone();
-                        let cid: CandidateId = *candidates.entry(n).or_insert_with(|| {
-                            if nc == UWI {
-                                UWI_CANDIDATE_ID
-                            } else {
-                                counter += 1;
-                                CandidateId(counter)
-                            }
-                        });
-                        Some(cid)
+                        counter += 1;
+                        CandidateId(counter)
                     }
-                })
-                .collect();
-            let randked_choice: RankedChoice = match &cs[..] {
-                [first, rest @ ..] => RankedChoice {
-                    first: *first,
-                    rest: rest.to_vec(),
-                },
-                _ => {
-                    unimplemented!("bad vote. not implemented {:?}", v);
-                }
-            };
-            VoteInternal {
-                count: VoteCount(v.count),
-                candidates: randked_choice,
+                });
+                choices.push(Choice::Filled(cid));
             }
-        })
-        .collect();
+        }
+        let randked_choice: RankedChoice = match &choices[..] {
+            [first, rest @ ..] => RankedChoice {
+                first: *first,
+                rest: rest.to_vec(),
+            },
+            _ => {
+                unimplemented!("bad vote. not implemented {:?}", v);
+            }
+        };
+        vas.push(VoteInternal {
+            count: VoteCount(v.count),
+            candidates: randked_choice,
+        });
+    }
+
     debug!(
         "checks: vote aggs size: {:?}  candidates: {:?}",
         vas.len(),
