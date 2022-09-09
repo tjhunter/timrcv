@@ -610,14 +610,12 @@ mod tests {
     use super::test_wrapper;
 
     #[test]
-    #[ignore = "TODO"]
     fn _2013_minneapolis_mayor() {
-        // TODO P1
         test_wrapper("2013_minneapolis_mayor");
     }
 
     #[test]
-    #[ignore = "TODO"]
+    // #[ignore = "TODO"]
     fn _2013_minneapolis_mayor_scale() {
         test_wrapper("2013_minneapolis_mayor_scale");
     }
