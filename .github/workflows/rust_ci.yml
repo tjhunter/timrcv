@@ -8,7 +8,7 @@ on:
       - main
   pull_request:
     branches:
-      - master
+      - main
 
 env:
   RCV_TEST_DIR: rcv/src/test/resources/network/brightspots/rcv/test_data
