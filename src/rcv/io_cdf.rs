@@ -3,11 +3,16 @@ use snafu::OptionExt;
 use crate::rcv::*;
 use std::collections::HashMap;
 
+use crate::rcv::io_common::simplify_file_name;
+
 pub fn read_json(path: String) -> BRcvResult<Vec<ParsedBallot>> {
-    let contents = fs::read_to_string(path).context(OpeningJsonSnafu {})?;
+    let contents = fs::read_to_string(path.clone()).context(OpeningJsonSnafu {})?;
 
     let cvrr: CastVoteRecordReport =
         serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?;
+
+    // The filename to add as a ballot id
+    let simplified_file_name = simplify_file_name(path.as_str());
 
     // Mapping from id to candidate name
     let mut candidateids_mapping: HashMap<String, String> = HashMap::new();
@@ -26,6 +31,11 @@ pub fn read_json(path: String) -> BRcvResult<Vec<ParsedBallot>> {
             .context(CdfParsingJsonSnafu {})?;
         candidateids_mapping.insert(contest_id.clone(), c.candidate_name.clone());
     }
+
+    debug!(
+        "read_json: candidateids_mapping: {:?}",
+        candidateids_mapping
+    );
 
     let mut ballots: Vec<ParsedBallot> = Vec::new();
     for cvr in cvrr.cvr.iter() {
@@ -48,7 +58,7 @@ pub fn read_json(path: String) -> BRcvResult<Vec<ParsedBallot>> {
                     .max()
                     .context(CdfParsingJsonSnafu {})?;
                 let mut choices: Vec<Vec<String>> = vec![];
-                for _ in 1..max_sels {
+                for _ in 0..max_sels {
                     choices.push(vec![]);
                 }
                 for (cname, rank) in ranks.iter() {
@@ -58,19 +68,16 @@ pub fn read_json(path: String) -> BRcvResult<Vec<ParsedBallot>> {
                 }
                 // TODO: check that all the votes have the same weight
                 let count: u64 = *num_votes.first().context(CdfParsingJsonSnafu {})?;
-                ballots.push(ParsedBallot {
-                    id: None, // TODO
+                let b = ParsedBallot {
+                    id: Some(format!("{}_{}", simplified_file_name, cvr.ballot_id)),
                     count: Some(count),
                     choices,
-                });
+                };
+                debug!("read_json: parsed ballot: {:?}", b.clone());
+                ballots.push(b);
             }
         }
     }
-
-    debug!(
-        "read_json: candidateids_mapping: {:?}",
-        candidateids_mapping
-    );
 
     Ok(ballots)
 }

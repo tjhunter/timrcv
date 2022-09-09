@@ -1,8 +1,6 @@
 use snafu::OptionExt;
 
-use crate::rcv::*;
-
-use std::path::Path;
+use crate::rcv::{io_common::simplify_file_name, *};
 
 pub fn read_excel_file(path: String, cfs: &FileSource) -> BRcvResult<Vec<ParsedBallot>> {
     let p = path.clone();
@@ -13,13 +11,8 @@ pub fn read_excel_file(path: String, cfs: &FileSource) -> BRcvResult<Vec<ParsedB
         .context(EmptyExcelSnafu {})?
         .context(OpeningExcelSnafu { path: path.clone() })?;
 
-    // TODO: no unwrap
     // The filename to add as a ballot id
-    let simplified_file_name = Path::new(path.as_str())
-        .file_name()
-        .unwrap()
-        .to_str()
-        .unwrap();
+    let simplified_file_name = simplify_file_name(path.as_str());
 
     let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
     debug!("read_excel_file: header: {:?}", header);

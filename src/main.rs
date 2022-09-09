@@ -27,7 +27,7 @@ fn main() -> ExitCode {
 
     let _args = Args::parse();
 
-    test_wrapper("skip_to_next_test");
+    test_wrapper("test_set_1_exhaust_at_overvote");
     ExitCode::SUCCESS
 
     // let r = rcv::run_election("/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data/duplicate_test/duplicate_test_config.json".to_string(),
