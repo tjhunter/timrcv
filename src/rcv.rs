@@ -614,8 +614,9 @@ mod tests {
         test_wrapper("2013_minneapolis_mayor");
     }
 
+    // Takes about 100s to complete on github actions, disabled for the time being.
     #[test]
-    // #[ignore = "TODO"]
+    #[ignore = "SLOW"]
     fn _2013_minneapolis_mayor_scale() {
         test_wrapper("2013_minneapolis_mayor_scale");
     }

@@ -15,7 +15,7 @@ env:
 
 jobs:
 
-  test_phaser:
+  test_main:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -46,11 +46,9 @@ jobs:
 
       - name: Test
         run: |
-          ls -la *.*
-          ls -la rcv/*
           cargo check
-          cargo test --all          
+          cargo test
 
       - name: Build
         run: |
-          cargo build --release          
+          cargo build --release
