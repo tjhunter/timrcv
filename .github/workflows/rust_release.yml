@@ -1,6 +1,11 @@
 name: Release
 
-on: [push]
+on:
+  push:
+    # Pattern matched against refs/tags
+    tags:        
+      - 'v*'
+
 
 jobs:
   build:
