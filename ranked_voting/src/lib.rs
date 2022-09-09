@@ -4,13 +4,12 @@ use log::{debug, info};
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
-    ops::AddAssign,
+    ops::{Add, AddAssign},
 };
 
 pub use crate::config::*;
 
 pub const UWI: &str = "UNDECLARED_WRITE_IN";
-const UWI_CANDIDATE_ID: CandidateId = CandidateId(0);
 
 /// A blank vote (undervote). It can be inserted to continue with the tally.
 pub const UNDERVOTE: &str = "BLANK";
@@ -27,13 +26,16 @@ struct CandidateId(u32);
 #[derive(Eq, PartialEq, Debug, Clone, Copy, Hash, Ord, PartialOrd)]
 enum Choice {
     Blank,
+    Undervote,
+    Overvote,
+    Undeclared,
     Filled(CandidateId),
 }
 
 // Invariant: there is at least one CandidateId in all the choices.
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 struct RankedChoice {
-    first: Choice,
+    first_valid: CandidateId,
     rest: Vec<Choice>,
 }
 
@@ -43,47 +45,31 @@ impl RankedChoice {
     /// time under the exhaust policy, this ballot will be exhausted.
     fn filtered_candidate(
         &self,
-        eliminated: &HashSet<CandidateId>,
+        still_valid: &HashSet<CandidateId>,
         duplicate_policy: DuplicateCandidateMode,
+        overvote: OverVoteRule,
+        skipped_ranks: MaxSkippedRank,
     ) -> Option<RankedChoice> {
-        // Remove the first vote if it is blank
-        let mut choices = if self.first == Choice::Blank {
-            vec![]
+        // If the top candidate did not get eliminated, keep the current ranked choice.
+        if still_valid.contains(&self.first_valid) {
+            return Some(self.clone());
+        }
+
+        // Run the choice pruning procedure.
+        // Add again the first choice since it may have an impact on the elimination rules.
+        let mut all_choices = vec![Choice::Filled(self.first_valid)];
+        all_choices.extend(self.rest.clone());
+
+        if let Some((first_valid, rest)) = advance_voting(
+            &all_choices,
+            still_valid,
+            duplicate_policy,
+            overvote,
+            skipped_ranks,
+        ) {
+            Some(RankedChoice { first_valid, rest })
         } else {
-            vec![self.first]
-        };
-        choices.extend(self.rest.clone());
-
-        // // See if the current top candidate is present multiple time.
-        // if let Choice::Filled(cid_first) = self.first {
-        //     let has_duplicates = self
-        //         .rest
-        //         .iter()
-        //         .any(|&choice| matches!(choice, Choice::Filled(cid) if cid == cid_first));
-
-        //     if duplicate_policy == DuplicateCandidateMode::Exhaust && has_duplicates {
-        //         return None;
-        //     }
-        // }
-
-        let rem_choices: Vec<Choice> = choices
-            .iter()
-            .filter(|choice| {
-                // Keep blank or non-eliminated candidates.
-                if let Choice::Filled(cid) = choice {
-                    !eliminated.contains(cid)
-                } else {
-                    **choice != Choice::Blank
-                }
-            })
-            .cloned()
-            .collect();
-        match &rem_choices[..] {
-            [] => None,
-            [first, rest @ ..] => Some(RankedChoice {
-                first: *first,
-                rest: rest.to_vec(),
-            }),
+            None
         }
     }
 }
@@ -104,6 +90,13 @@ impl std::iter::Sum for VoteCount {
 impl AddAssign for VoteCount {
     fn add_assign(&mut self, rhs: VoteCount) {
         self.0 += rhs.0;
+    }
+}
+
+impl Add for VoteCount {
+    type Output = VoteCount;
+    fn add(self: VoteCount, rhs: VoteCount) -> VoteCount {
+        VoteCount(self.0 + rhs.0)
     }
 }
 
@@ -132,10 +125,17 @@ enum RoundCandidateStatusInternal {
     Eliminated(Vec<(CandidateId, VoteCount)>, VoteCount),
 }
 
+// TODO: rename InternalRoundStatistics
+#[derive(Eq, PartialEq, Debug, Clone)]
+struct RoundStatistics {
+    candidate_stats: Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>,
+    uwi_elimination_stats: Option<(Vec<(CandidateId, VoteCount)>, VoteCount)>,
+}
+
 #[derive(Eq, PartialEq, Debug, Clone)]
 struct RoundResult {
     votes: Vec<VoteInternal>,
-    stats: Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>,
+    stats: RoundStatistics,
     // Winning vote threshold
     vote_threshold: VoteCount,
 }
@@ -159,9 +159,14 @@ pub fn run_voting_stats(
         rules
     );
 
-    let cr: CheckResult = checks(coll, candidates)?;
+    // TODO: ensure candidates
+    let cr: CheckResult = checks(coll, &candidates.clone().unwrap(), rules)?;
     let checked_votes = cr.votes;
-    debug!("run_voting_stats: Checked votes: {:?}", checked_votes.len());
+    debug!(
+        "run_voting_stats: Checked votes: {:?}, detected UWIs {:?}",
+        checked_votes.len(),
+        cr.count_exhausted_uwi_first_round
+    );
     let all_candidates = cr.candidates;
     {
         info!("Processing {:?} aggregated votes", checked_votes.len());
@@ -186,8 +191,7 @@ pub fn run_voting_stats(
     // The candidates that are still running, in sorted order as defined by input.
     let mut cur_sorted_candidates: Vec<(String, CandidateId)> = all_candidates;
     let mut cur_votes: Vec<VoteInternal> = checked_votes;
-    let mut cur_stats: Vec<Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>> =
-        Vec::new();
+    let mut cur_stats: Vec<RoundStatistics> = Vec::new();
 
     // TODO: better management of the number of iterations
     while cur_stats.iter().len() < 10000 {
@@ -196,11 +200,27 @@ pub fn run_voting_stats(
             "Round id: {:?} cur_candidates: {:?}",
             round_id, cur_sorted_candidates
         );
-        let round_res = run_one_round(&cur_votes, rules, &cur_sorted_candidates, round_id)?;
-        let stats = round_res.stats.clone();
-        info!("Round id: {:?} stats: {:?}", round_id, round_res.stats);
+        let has_initial_uwis = cur_stats.is_empty()
+            && (!cr.uwi_first_votes.is_empty()
+                || cr.count_exhausted_uwi_first_round > VoteCount::EMPTY);
+        let round_res: RoundResult = if has_initial_uwis {
+            // First round and we have some undeclared write ins.
+            // Apply a special path to get rid of them.
+            run_first_round_uwi(
+                &cur_votes,
+                &cr.uwi_first_votes,
+                cr.count_exhausted_uwi_first_round,
+                &cur_sorted_candidates,
+            )?
+        } else {
+            run_one_round(&cur_votes, rules, &cur_sorted_candidates, round_id)?
+        };
+        let round_stats = round_res.stats.clone();
+        info!("Round id: {:?} stats: {:?}", round_id, round_stats);
+
         cur_votes = round_res.votes;
         cur_stats.push(round_res.stats);
+        let stats = round_stats.candidate_stats;
 
         // Survivors are described in candidate order.
         let mut survivors: Vec<(String, CandidateId)> = Vec::new();
@@ -217,12 +237,14 @@ pub fn run_voting_stats(
         let all_survivors_winners = stats
             .iter()
             .all(|(_, _, s)| matches!(s, RoundCandidateStatusInternal::Elected));
-        assert!(
-            all_survivors_winners || (survivors.len() < cur_sorted_candidates.len()),
-            "The number of candidates did not decrease: {:?} -> {:?}",
-            cur_sorted_candidates,
-            survivors
-        );
+        if !has_initial_uwis {
+            assert!(
+                all_survivors_winners || (survivors.len() < cur_sorted_candidates.len()),
+                "The number of candidates did not decrease: {:?} -> {:?}",
+                cur_sorted_candidates,
+                survivors
+            );
+        }
         cur_sorted_candidates = survivors;
 
         // Check end. For now, simply check that we have a winner.
@@ -263,7 +285,7 @@ fn get_threshold(tally: &HashMap<CandidateId, VoteCount>) -> VoteCount {
 }
 
 fn round_results_to_stats(
-    results: &[Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)>],
+    results: &[RoundStatistics],
     candidates_by_id: &HashMap<CandidateId, String>,
 ) -> Result<Vec<RoundStats>, VotingErrors> {
     let mut res: Vec<RoundStats> = Vec::new();
@@ -275,7 +297,7 @@ fn round_results_to_stats(
 }
 
 fn round_result_to_stat(
-    stats: &[(CandidateId, VoteCount, RoundCandidateStatusInternal)],
+    stats: &RoundStatistics,
     round_id: RoundId,
     candidates_by_id: &HashMap<CandidateId, String>,
 ) -> Result<RoundStats, VotingErrors> {
@@ -286,7 +308,7 @@ fn round_result_to_stat(
         tally_result_eliminated: Vec::new(),
     };
 
-    for (cid, c, status) in stats {
+    for (cid, c, status) in stats.candidate_stats.iter() {
         let name: &String = candidates_by_id
             .get(cid)
             .ok_or(VotingErrors::EmptyElection)?; // TODO: wrong error
@@ -298,7 +320,9 @@ fn round_result_to_stat(
             RoundCandidateStatusInternal::Elected => {
                 rs.tally_results_elected.push(name.clone());
             }
-            RoundCandidateStatusInternal::Eliminated(transfers, exhausts) => {
+            RoundCandidateStatusInternal::Eliminated(transfers, exhausts)
+                if (!transfers.is_empty()) || *exhausts > VoteCount::EMPTY =>
+            {
                 let mut pub_transfers: Vec<(String, u64)> = Vec::new();
                 for (t_cid, t_count) in transfers {
                     let t_name: &String = candidates_by_id
@@ -312,11 +336,95 @@ fn round_result_to_stat(
                     exhausted: exhausts.0,
                 });
             }
+            RoundCandidateStatusInternal::Eliminated(_, _) => {
+                // Do not print a candidate if its corresponding stats are going to be empty.
+            }
         }
     }
+
+    let uwi = "Undeclared Write-ins".to_string();
+
+    if let Some((uwi_transfers, uwi_exhauster)) = stats.uwi_elimination_stats.clone() {
+        let uwi_tally: VoteCount =
+            uwi_transfers.iter().map(|(_, vc)| *vc).sum::<VoteCount>() + uwi_exhauster;
+        rs.tally.push((uwi.clone(), uwi_tally.0));
+        let mut pub_transfers: Vec<(String, u64)> = Vec::new();
+        for (t_cid, t_count) in uwi_transfers.iter() {
+            let t_name: &String = candidates_by_id
+                .get(t_cid)
+                .ok_or(VotingErrors::EmptyElection)?; // TODO: wrong error
+            pub_transfers.push((t_name.clone(), t_count.0));
+        }
+
+        rs.tally_result_eliminated.push(EliminationStats {
+            name: uwi,
+            transfers: pub_transfers,
+            exhausted: uwi_exhauster.0,
+        });
+    }
+
     rs.tally_result_eliminated.sort_by_key(|es| es.name.clone());
     rs.tally_results_elected.sort();
     Ok(rs)
+}
+
+fn run_first_round_uwi(
+    votes: &[VoteInternal],
+    uwi_first_votes: &[VoteInternal],
+    uwi_first_exhausted: VoteCount,
+    candidate_names: &[(String, CandidateId)],
+) -> Result<RoundResult, VotingErrors> {
+    let tally = compute_tally(votes, candidate_names);
+    let mut elimination_stats: HashMap<CandidateId, VoteCount> = HashMap::new();
+    for v in uwi_first_votes.iter() {
+        let e = elimination_stats
+            .entry(v.candidates.first_valid)
+            .or_insert(VoteCount::EMPTY);
+        *e += v.count;
+    }
+
+    let full_stats = RoundStatistics {
+        candidate_stats: tally
+            .iter()
+            .map(|(cid, vc)| (*cid, *vc, RoundCandidateStatusInternal::StillRunning))
+            .collect(),
+        uwi_elimination_stats: Some((
+            elimination_stats
+                .iter()
+                .map(|(cid, vc)| (*cid, *vc))
+                .collect(),
+            uwi_first_exhausted,
+        )),
+    };
+
+    let mut all_votes = votes.to_vec();
+    all_votes.extend(uwi_first_votes.to_vec());
+
+    Ok(RoundResult {
+        votes: all_votes,
+        stats: full_stats,
+        vote_threshold: VoteCount::EMPTY,
+    })
+}
+
+fn compute_tally(
+    votes: &[VoteInternal],
+    candidate_names: &[(String, CandidateId)],
+) -> HashMap<CandidateId, VoteCount> {
+    let mut tally: HashMap<CandidateId, VoteCount> = HashMap::new();
+    for (_, cid) in candidate_names.iter() {
+        tally.insert(*cid, VoteCount::EMPTY);
+    }
+    for v in votes.iter() {
+        // DEBUG
+        if v.candidates.first_valid == (CandidateId(3)) {
+            debug!("run_one_round: {:?}", v.clone());
+        }
+        if let Some(vc) = tally.get_mut(&v.candidates.first_valid) {
+            *vc += v.count;
+        }
+    }
+    tally
 }
 
 /// Returns the removed candidates, and the remaining votes
@@ -328,27 +436,7 @@ fn run_one_round(
 ) -> Result<RoundResult, VotingErrors> {
     // Initialize the tally with the current candidate names to capture all the candidates who do
     // not even have a vote.
-    let mut tally: HashMap<CandidateId, VoteCount> = HashMap::new();
-    for (_, cid) in candidate_names.iter() {
-        tally.insert(*cid, VoteCount::EMPTY);
-    }
-    for v in votes.iter() {
-        // DEBUG
-        if v.candidates.first == Choice::Filled(CandidateId(3)) {
-            debug!("run_one_round: {:?}", v.clone());
-        }
-        if let Choice::Filled(cid) = v.candidates.first {
-            if let Some(vc) = tally.get_mut(&cid) {
-                *vc += v.count;
-            }
-        }
-    }
-    // let tally: HashMap<CandidateId, VoteCount> =
-    //     votes.iter().fold(HashMap::new(), |mut acc, va| {
-    //         *acc.entry(va.candidates.first).or_insert(VoteCount(0)) += va.count;
-    //         acc
-    //     });
-
+    let tally = compute_tally(votes, candidate_names);
     debug!("tally: {:?}", tally);
 
     let vote_threshold = get_threshold(&tally);
@@ -361,12 +449,16 @@ fn run_one_round(
             "run_one_round: only one candidate, directly winning: {:?}",
             tally
         );
-        return Ok(RoundResult {
-            votes: votes.to_vec(),
-            stats: tally
+        let stats = RoundStatistics {
+            candidate_stats: tally
                 .iter()
                 .map(|(cid, count)| (*cid, *count, RoundCandidateStatusInternal::Elected))
                 .collect(),
+            uwi_elimination_stats: Some((vec![], VoteCount::EMPTY)),
+        };
+        return Ok(RoundResult {
+            votes: votes.to_vec(),
+            stats,
             vote_threshold,
         });
     }
@@ -390,43 +482,46 @@ fn run_one_round(
             .map(|cid| (*cid, (HashMap::new(), VoteCount::EMPTY)))
             .collect();
 
+    let remaining_candidates: HashSet<CandidateId> = candidate_names
+        .iter()
+        .filter_map(|p| match p {
+            (_, cid) if !eliminated_candidates.contains(cid) => Some(*cid),
+            _ => None,
+        })
+        .collect();
+
     // Filter the rest of the votes to simply keep the votes that still matter
     let rem_votes: Vec<VoteInternal> = votes
         .iter()
         .filter_map(|va| {
             // Remove the choices that are not valid anymore and collect statistics.
-            let new_rank = va
-                .candidates
-                .filtered_candidate(&eliminated_candidates, rules.duplicate_candidate_mode);
-            let new_first = new_rank.clone().map(|nr| nr.first);
+            let new_rank = va.candidates.filtered_candidate(
+                &remaining_candidates,
+                rules.duplicate_candidate_mode,
+                rules.overvote_rule,
+                rules.max_skipped_rank_allowed,
+            );
+            let old_first = va.candidates.first_valid;
+            let new_first = new_rank.clone().map(|nr| nr.first_valid);
 
-            match (va.candidates.first, new_first) {
-                (Choice::Blank, None) => {
-                    // Top choice was blank before and the ballot is now exhausted.
-                    // Doing nothing,
-                }
-                (Choice::Filled(first_cid), None) => {
+            match new_first {
+                None => {
                     // Ballot is now exhausted. Record the exhausted vote.
                     let e = elimination_stats
-                        .entry(first_cid)
+                        .entry(old_first)
                         .or_insert((HashMap::new(), VoteCount::EMPTY));
                     e.1 += va.count;
                 }
-                (Choice::Filled(first_cid), Some(Choice::Filled(new_first_cid)))
-                    if eliminated_candidates.contains(&first_cid) =>
-                {
-                    // Ballot has been transfered.
-                    // Record the transfer.
-                    // The vote has been transfered. Record the transfer.
+                Some(new_first_cid) if new_first_cid != old_first => {
+                    // The ballot has been transfered. Record the transfer.
                     let e = elimination_stats
-                        .entry(first_cid)
+                        .entry(old_first)
                         .or_insert((HashMap::new(), VoteCount::EMPTY));
                     let e2 = e.0.entry(new_first_cid).or_insert(VoteCount::EMPTY);
                     *e2 += va.count;
                 }
                 _ => {
-                    // Nothing to do in the other cases.
-                    // TODO: check potential other situations with the blank ballots.
+                    // Nothing to do, the first choice is the same.
                 }
             }
 
@@ -466,10 +561,11 @@ fn run_one_round(
         }
     }
 
-    let mut round_stats: Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)> = Vec::new();
+    let mut candidate_stats: Vec<(CandidateId, VoteCount, RoundCandidateStatusInternal)> =
+        Vec::new();
     for (&cid, &count) in tally.iter() {
         if let Some((transfers, exhaust)) = elimination_stats.get(&cid) {
-            round_stats.push((
+            candidate_stats.push((
                 cid,
                 count,
                 RoundCandidateStatusInternal::Eliminated(
@@ -478,16 +574,19 @@ fn run_one_round(
                 ),
             ))
         } else if winners.contains(&cid) {
-            round_stats.push((cid, count, RoundCandidateStatusInternal::Elected));
+            candidate_stats.push((cid, count, RoundCandidateStatusInternal::Elected));
         } else {
             // Not eliminated, still running
-            round_stats.push((cid, count, RoundCandidateStatusInternal::StillRunning));
+            candidate_stats.push((cid, count, RoundCandidateStatusInternal::StillRunning));
         }
     }
 
     Ok(RoundResult {
         votes: rem_votes,
-        stats: round_stats,
+        stats: RoundStatistics {
+            candidate_stats,
+            uwi_elimination_stats: None,
+        },
         vote_threshold,
     })
 }
@@ -498,10 +597,6 @@ fn find_eliminated_candidates(
     candidate_names: &[(String, CandidateId)],
     num_round: u32,
 ) -> (Vec<CandidateId>, TiebreakSituation) {
-    if tally.get(&UWI_CANDIDATE_ID).is_some() {
-        return (vec![UWI_CANDIDATE_ID], TiebreakSituation::Clean);
-    };
-
     // Try to eliminate candidates in batch
     if let Some(v) = find_eliminated_candidates_batch(tally) {
         return (v, TiebreakSituation::Clean);
@@ -681,20 +776,99 @@ fn find_eliminated_candidates_single(
     Some((sorted_candidates, TiebreakSituation::TiebreakOccured))
 }
 
+// The algorithm is lazy. It will only apply the rules up to finding the next candidate.
+fn advance_voting(
+    choices: &[Choice],
+    still_valid: &HashSet<CandidateId>,
+    duplicate_policy: DuplicateCandidateMode,
+    overvote: OverVoteRule,
+    skipped_ranks: MaxSkippedRank,
+) -> Option<(CandidateId, Vec<Choice>)> {
+    // Find a potential candidate.
+    let first_candidate = choices
+        .iter()
+        .enumerate()
+        .find_map(|(idx, choice)| match choice {
+            Choice::Filled(cid) if still_valid.contains(cid) => Some((idx, cid)),
+            _ => None,
+        });
+    if let Some((idx, cid)) = first_candidate {
+        // A valid candidate was found, but still look in the initial slice to find if some
+        // overvote or multiple blanks occured.
+        let initial_slice = &choices[..idx];
+
+        if duplicate_policy == DuplicateCandidateMode::Exhaust {
+            let mut seen_cids: HashSet<CandidateId> = HashSet::new();
+            for choice in initial_slice.iter() {
+                match *choice {
+                    Choice::Filled(cid) if seen_cids.contains(&cid) => {
+                        return None;
+                    }
+                    Choice::Filled(cid) => {
+                        seen_cids.insert(cid);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Overvote rule
+        let has_initial_overvote = initial_slice.iter().any(|c| *c == Choice::Overvote);
+        if has_initial_overvote && overvote == OverVoteRule::ExhaustImmediately {
+            return None;
+        }
+
+        // Skipped rank rule
+        if let MaxSkippedRank::MaxAllowed(range_len) = skipped_ranks {
+            let mut start_skipped_block: Option<usize> = None;
+            let rl = range_len as usize;
+            for (idx, choice) in initial_slice.iter().enumerate() {
+                match (choice, start_skipped_block) {
+                    // We went beyond the threshold
+                    (Choice::Blank, Some(start_idx)) if idx >= start_idx + rl => {
+                        return None;
+                    }
+                    (Choice::Undervote, Some(start_idx)) if idx >= start_idx + rl => {
+                        return None;
+                    }
+                    // We are starting a new block
+                    (Choice::Blank, None) => {
+                        start_skipped_block = Some(idx);
+                    }
+                    (Choice::Undervote, None) => {
+                        start_skipped_block = Some(idx);
+                    }
+                    // We are exiting a block or encountering a new element. Reset.
+                    _ => {
+                        start_skipped_block = None;
+                    }
+                }
+            }
+        }
+
+        let final_slice = &choices[idx + 1..];
+        Some((*cid, final_slice.to_vec()))
+    } else {
+        None
+    }
+}
+
 struct CheckResult {
     votes: Vec<VoteInternal>,
+    // further_votes: Vec<VoteInternal>,
     candidates: Vec<(String, CandidateId)>,
+    uwi_first_votes: Vec<VoteInternal>,
+    count_exhausted_uwi_first_round: VoteCount,
 }
 
 // Candidates are returned in the same order.
 fn checks(
     coll: &[Vote],
-    reg_candidates: &Option<Vec<config::Candidate>>,
+    reg_candidates: &[config::Candidate],
+    rules: &config::VoteRules,
 ) -> Result<CheckResult, VotingErrors> {
     debug!("checks: coll size: {:?}", coll.len());
     let blacklisted_candidates: HashSet<String> = reg_candidates
-        .clone()
-        .unwrap_or_default()
         .iter()
         .filter_map(|c| {
             if c.excluded {
@@ -704,102 +878,95 @@ fn checks(
             }
         })
         .collect();
-    // number 0 is reserved for the undeclared write in's.
-    // Counter will be always incremendet before being used.
-    let mut counter: u32 = 0;
-    let reg_candidate_names: Option<HashSet<String>>;
-    // Assign to everyone who is a regular candidate an ID, not just the ones in the votes.
-    // This simplifies the accounting when showing candidates who do not get votes.
-    let mut candidates: HashMap<String, CandidateId> = HashMap::new();
-    if let Some(cs) = reg_candidates {
-        reg_candidate_names = Some(cs.iter().map(|c| c.name.clone()).collect());
-        candidates = cs
-            .iter()
-            .enumerate()
-            .map(|(idx, s)| (s.name.clone(), CandidateId((idx as u32) + 1)))
-            .collect();
-        counter = cs.len() as u32;
-    } else {
-        reg_candidate_names = None;
-    }
+    let candidates: HashMap<String, CandidateId> = reg_candidates
+        .iter()
+        .enumerate()
+        .map(|(idx, c)| (c.name.clone(), CandidateId((idx + 1) as u32)))
+        .collect();
 
-    let mut vas: Vec<VoteInternal> = vec![];
+    let valid_cids: HashSet<CandidateId> = candidates.values().cloned().collect();
+
+    // The votes that are validated and that have a candidate from the first round
+    let mut validated_votes: Vec<VoteInternal> = vec![];
+    // The votes that are valid but do not have a candidate in the first round.
+    let mut uwi_validated_votes: Vec<VoteInternal> = vec![];
+    // The count of votes that are immediately exhausted with a UWI in the first round.
+    let mut uwi_exhausted_first_round: VoteCount = VoteCount::EMPTY;
 
     for v in coll.iter() {
         let mut choices: Vec<Choice> = vec![];
         for c in v.candidates.iter() {
-            if blacklisted_candidates.contains(c) {
-                // Nothing to do, candidate is blacklisted.
-            } else if c.as_str() == UNDERVOTE {
-                // Undervote, push as blank.
-                choices.push(Choice::Blank);
-            } else {
-                // Normal choice, find the corresponding candidate id.
-                // Check if the name is one of a regular candidate or it should be discarded as an
-                // undeclared write in.
-                let n: String = match &reg_candidate_names {
-                    // We have been provided a list of regular candidates and this list does
-                    // not include the name of the current candidate.
-                    // Discard it as a UWI
-                    Some(c_names) if !c_names.contains(c) => UWI.to_string(),
-                    _ => c.clone(),
-                };
-                let nc = n.clone();
-                let cid: CandidateId = *candidates.entry(n).or_insert_with(|| {
-                    if nc == UWI {
-                        UWI_CANDIDATE_ID
+            let choice: Choice = match c {
+                BallotChoice::Candidate(name) if blacklisted_candidates.contains(name) => {
+                    unimplemented!("blacklisted not implemented");
+                }
+                BallotChoice::Candidate(name) => {
+                    if let Some(cid) = candidates.get(name) {
+                        Choice::Filled(*cid)
                     } else {
-                        counter += 1;
-                        CandidateId(counter)
+                        // Undeclared candidate
+                        Choice::Undeclared
                     }
-                });
-                choices.push(Choice::Filled(cid));
+                }
+                BallotChoice::Blank => Choice::Blank,
+                BallotChoice::Overvote => Choice::Overvote,
+                BallotChoice::Undervote => Choice::Undervote,
+                BallotChoice::UndeclaredWriteIn => Choice::Undeclared,
+            };
+            choices.push(choice);
+        }
+
+        let count = VoteCount(v.count);
+        // The first choice is a valid one. A ballot can be constructed out of it.
+        if let Some(Choice::Filled(cid)) = choices.first() {
+            let candidates = RankedChoice {
+                first_valid: *cid,
+                rest: choices[1..].to_vec(),
+            };
+            validated_votes.push(VoteInternal { candidates, count });
+        } else if let Some((first_cid, rest)) = advance_voting(
+            &choices,
+            &valid_cids,
+            rules.duplicate_candidate_mode,
+            rules.overvote_rule,
+            rules.max_skipped_rank_allowed,
+        ) {
+            let candidates = RankedChoice {
+                first_valid: first_cid,
+                rest,
+            };
+            // The ballot started with undeclared but could eventually be recovered
+            // with a valid candidate. Keep it.
+            if let Some(Choice::Undeclared) = choices.first() {
+                uwi_validated_votes.push(VoteInternal { candidates, count })
+            } else {
+                validated_votes.push(VoteInternal { candidates, count });
+            }
+        } else {
+            // The vote cannot be recovered. Just record it if it was an undeclared ballot.
+            if let Some(Choice::Undeclared) = choices.first() {
+                uwi_exhausted_first_round += VoteCount(v.count);
             }
         }
-        let randked_choice: RankedChoice = match &choices[..] {
-            [first, rest @ ..] => RankedChoice {
-                first: *first,
-                rest: rest.to_vec(),
-            },
-            _ => {
-                unimplemented!("bad vote. not implemented {:?}", v);
-            }
-        };
-        vas.push(VoteInternal {
-            count: VoteCount(v.count),
-            candidates: randked_choice,
-        });
     }
 
     debug!(
         "checks: vote aggs size: {:?}  candidates: {:?}",
-        vas.len(),
+        validated_votes.len(),
         candidates.len()
     );
-    let mut ordered_candidates: Vec<(String, CandidateId)> = match reg_candidates {
-        None => {
-            // We use the candidates who have been discovered.
-            // The order is the one of the ids.
-            let mut res: Vec<(String, CandidateId)> = candidates
-                .iter()
-                .map(|(n, cid)| (n.clone(), *cid))
-                .collect();
-            res.sort_by_key(|(_, cid)| *cid);
-            res
-        }
-        Some(rc) => rc
-            .iter()
-            .filter_map(|c| candidates.get(&c.name).map(|cid| (c.name.clone(), *cid)))
-            .collect(),
-    };
+
+    let ordered_candidates: Vec<(String, CandidateId)> = reg_candidates
+        .iter()
+        .filter_map(|c| candidates.get(&c.name).map(|cid| (c.name.clone(), *cid)))
+        .collect();
+
     debug!("checks: ordered_candidates {:?}", ordered_candidates);
-    // If some UWIs were also found, add it to the list of candidates.
-    if let Some(idx) = candidates.get(UWI) {
-        ordered_candidates.push((UWI.to_string(), *idx));
-    }
     Ok(CheckResult {
-        votes: vas,
+        votes: validated_votes,
+        uwi_first_votes: uwi_validated_votes,
         candidates: ordered_candidates,
+        count_exhausted_uwi_first_round: uwi_exhausted_first_round,
     })
 }
 

@@ -1,8 +1,20 @@
 // ********* Input data structures ***********
 
+// All the possible choices that can be made on a ballot
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum BallotChoice {
+    Candidate(String),
+    UndeclaredWriteIn,
+    Overvote,
+    Undervote, // Blank vote
+    // A blank content in the vote.
+    // This is the policy with blank votes that are not clearly labeled as under- or overvotes.
+    Blank,
+}
+
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct Vote {
-    pub candidates: Vec<String>,
+    pub candidates: Vec<BallotChoice>,
     pub count: u64,
 }
 
@@ -56,6 +68,12 @@ pub enum TieBreakMode {
 }
 
 #[derive(Eq, PartialEq, Debug, Clone, Copy)]
+pub enum OverVoteRule {
+    ExhaustImmediately,
+    AlwaysSkipToNextRank,
+}
+
+#[derive(Eq, PartialEq, Debug, Clone, Copy)]
 pub enum DuplicateCandidateMode {
     Exhaust,
     SkipDuplicate,
@@ -80,22 +98,27 @@ pub enum EliminationAlgorithm {
     Single,
 }
 
+#[derive(Eq, PartialEq, Debug, Clone, Copy)]
+pub enum MaxSkippedRank {
+    Unlimited,
+    MaxAllowed(u32),
+}
+
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct VoteRules {
     pub tiebreak_mode: TieBreakMode,
-    // TODO overvote rule
+    pub overvote_rule: OverVoteRule,
     pub winner_election_mode: WinnerElectionMode,
     pub number_of_winners: u32, // TODO should it be an option?
     // TODO decimalPlacesForVoteArithmetic
     pub minimum_vote_threshold: Option<u32>,
-    // TODO max_skipped_rank_allowed. currently set to unlimited
+    pub max_skipped_rank_allowed: MaxSkippedRank,
     pub max_rankings_allowed: Option<u32>,
     // TODO: randomSeed
     // TODO multiSeatBottomsUpPercentageThreshold
     // TODO rulesDescription
     // TODO nonIntegerWinningThreshold
     // TODO hareQuota
-    // TODO batchElimination
     // TODO continueUntilTwoCandidatesRemain
     pub elimination_algorithm: EliminationAlgorithm,
     pub duplicate_candidate_mode: DuplicateCandidateMode,
@@ -104,7 +127,9 @@ pub struct VoteRules {
 impl VoteRules {
     pub const DEFAULT_RULES: VoteRules = VoteRules {
         tiebreak_mode: TieBreakMode::UseCandidateOrder,
+        overvote_rule: OverVoteRule::AlwaysSkipToNextRank,
         winner_election_mode: WinnerElectionMode::SingelWinnerMajority,
+        max_skipped_rank_allowed: MaxSkippedRank::Unlimited,
         number_of_winners: 1,
         minimum_vote_threshold: None,
         max_rankings_allowed: None,

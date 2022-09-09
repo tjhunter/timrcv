@@ -20,18 +20,6 @@ pub mod io_cdf;
 pub mod io_dominion;
 pub mod io_ess;
 
-// All the possible choices that can be made on a ballot
-#[derive(Eq, PartialEq, Debug, Clone, Hash)]
-enum BallotChoice {
-    Candidate(String),
-    UndeclaredWriteIn,
-    Overvote,
-    Undervote, // Blank vote
-    // A blank content in the vote.
-    // This is the policy with blank votes that are not clearly labeled as under- or overvotes.
-    Blank,
-}
-
 #[derive(Debug, Snafu)]
 pub enum RcvError {
     #[snafu(display(""))]
@@ -230,12 +218,6 @@ pub mod config_reader {
         pub exhaust_on_duplicate_candidate: Option<bool>,
     }
 
-    #[derive(Eq, PartialEq, Debug, Clone)]
-    pub enum OverVoteRule {
-        ExhaustImmediately,
-        AlwaysSkipToNextRank,
-    }
-
     impl RcvRules {
         pub fn overvote_rule(&self) -> RcvResult<OverVoteRule> {
             match self._overvote_rule.as_str() {
@@ -263,14 +245,33 @@ pub mod config_reader {
         let mut js: JSValue =
             serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?;
         // Order the tally results to ensure stability
+        // Remove the mention of the undeclared write-in's when they have zero votes associated to them.
         let results_ordered: Vec<JSValue> = js["results"]
             .as_array()
             .unwrap()
             .iter()
             .map(|jsv| {
                 let mut res = jsv.clone();
-                let mut tally_results: Vec<JSValue> =
-                    res["tallyResults"].as_array().unwrap().clone();
+                let mut tally_results: Vec<JSValue> = res["tallyResults"]
+                    .as_array()
+                    .unwrap()
+                    .clone()
+                    .iter()
+                    .filter(|jsv| {
+                        let obj = jsv.as_object().unwrap().clone();
+                        if obj.get("eliminated").is_some() {
+                            !obj.get("transfers")
+                                .unwrap()
+                                .as_object()
+                                .unwrap()
+                                .is_empty()
+                        } else {
+                            true
+                        }
+                    })
+                    .cloned()
+                    .collect();
+
                 tally_results.sort_by_key(|trjs| {
                     let obj = trjs.as_object().unwrap().clone();
                     let elected = obj.get("elected");
@@ -281,7 +282,17 @@ pub mod config_reader {
                         .unwrap();
                     s
                 });
+
+                let mut tally = res["tally"].as_object().unwrap().clone();
+                let k = "Undeclared Write-ins".to_string();
+                if let Some(v) = tally.get(&k) {
+                    if v.as_str() == Some("0") {
+                        tally.remove(&k);
+                    }
+                }
+
                 res["tallyResults"] = serde_json::Value::Array(tally_results);
+                res["tally"] = serde_json::Value::Object(tally);
                 res
             })
             .collect();
@@ -313,35 +324,6 @@ pub struct ParsedBallot {
     pub choices: Vec<Vec<String>>,
 }
 
-// TODO: add policy on how to treat the bad ballots.
-fn create_vote(
-    ballot_id: &String,
-    count: u64,
-    choices: &[BallotChoice],
-    _rules: &RcvRules,
-) -> RcvResult<Option<Vote>> {
-    let mut candidates: Vec<String> = Vec::new();
-    // For now, be very permissive.
-    for c in choices {
-        match c {
-            BallotChoice::Candidate(s) => {
-                candidates.push(s.clone());
-            }
-            BallotChoice::UndeclaredWriteIn => {
-                // TODO: this is hardcoded.
-                candidates.push("UWI".to_string());
-            }
-            _ => {
-                warn!(
-                    "create_vote: ballot_id {}: skipping choice {:?}",
-                    ballot_id, c
-                );
-            }
-        }
-    }
-    Ok(Some(Vote { candidates, count }))
-}
-
 fn read_ranking_data(
     root_path: String,
     cfs: &FileSource,
@@ -366,7 +348,6 @@ fn validate_ballots(
     source: &FileSource,
     _rules: &RcvRules,
 ) -> RcvResult<Vec<Vote>> {
-    let overvote_rule = _rules.overvote_rule()?;
     let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
     let mut res: Vec<Vote> = Vec::new();
 
@@ -411,35 +392,14 @@ fn validate_ballots(
             pb.id, choices
         );
 
-        // Filter some of the choices.
-        let mut candidates: Vec<String> = vec![];
-        for c in choices.iter() {
-            match c {
-                BallotChoice::Candidate(x) => {
-                    candidates.push(x.clone());
-                }
-                BallotChoice::UndeclaredWriteIn => {
-                    candidates.push(UWI.to_string());
-                }
-                // Undervotes are discarded.
-                BallotChoice::Undervote => {}
-                BallotChoice::Overvote => {
-                    // The rest of the ballot will not be considered under this rule.
-                    if overvote_rule == OverVoteRule::ExhaustImmediately {
-                        break;
-                    }
-                }
-                BallotChoice::Blank => {
-                    // Blanks are skipped
-                }
-            }
-        }
-
         // Default of 1 if not specified
         let count = pb.count.unwrap_or(1);
 
         if count > 0 && !candidates.is_empty() {
-            let v = Vote { candidates, count };
+            let v = Vote {
+                candidates: choices,
+                count,
+            };
             debug!(
                 "validate_ballots: ballot {:?}: adding vote {:?}",
                 pb.id,
@@ -474,6 +434,22 @@ fn validate_rules(rcv_rules: &RcvRules) -> RcvResult<VoteRules> {
                 )
             }
         },
+        max_skipped_rank_allowed: match rcv_rules.max_skipped_ranks_allowed.as_str() {
+            "unlimited" => MaxSkippedRank::Unlimited,
+            "0" => {
+                whatever!("Value 0 not allowed for maxSkippedRanksAllowed")
+            }
+            x => match x.parse() {
+                Ok(num) => MaxSkippedRank::MaxAllowed(num),
+                _ => {
+                    whatever!(
+                        "Value '{:?}' cannot be understood for maxSkippedRanksAllowed",
+                        rcv_rules.max_rankings_allowed
+                    )
+                }
+            },
+        },
+        overvote_rule: rcv_rules.overvote_rule()?,
         winner_election_mode: match rcv_rules.winner_election_mode.as_str() {
             "singleWinnerMajority" => WinnerElectionMode::SingelWinnerMajority,
             x => {
@@ -616,6 +592,7 @@ fn run_election_test(test_name: &str, config_lpath: &str, summary_lpath: &str) {
         } else {
             eprintln!("No trace found");
         }
+        panic!("Exiting hard");
     }
 }
 
@@ -646,11 +623,10 @@ mod tests {
         test_wrapper("2013_minneapolis_mayor_scale");
     }
 
-    // #[test]
-    // fn _2013_minneapolis_mayor() {
-    //     // TODO P1
-    //     test_wrapper("2013_minneapolis_mayor");
-    // }
+    #[test]
+    fn _2015_portland_mayor() {
+        test_wrapper("2015_portland_mayor");
+    }
 
     #[test]
     #[ignore = "TODO implement clearBallot provider"]

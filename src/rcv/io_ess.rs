@@ -1,7 +1,6 @@
 use snafu::OptionExt;
 
 use crate::rcv::*;
-use std::collections::HashSet;
 
 use std::path::Path;
 
@@ -88,89 +87,90 @@ fn read_choice_calamine2(
     }
 }
 
-pub fn read_excel_file0(
-    path: String,
-    cfs: &FileSource,
-    candidates: &[RcvCandidate],
-    rules: &RcvRules,
-) -> RcvResult<Vec<ranked_voting::Vote>> {
-    let p = path.clone();
-    let mut workbook: Xlsx<_> =
-        open_workbook(p).context(OpeningExcelSnafu { path: path.clone() })?;
-    let wrange = workbook
-        .worksheet_range_at(0)
-        .context(EmptyExcelSnafu {})?
-        .context(OpeningExcelSnafu { path })?;
+// TODO: remove
+// pub fn read_excel_file0(
+//     path: String,
+//     cfs: &FileSource,
+//     candidates: &[RcvCandidate],
+//     rules: &RcvRules,
+// ) -> RcvResult<Vec<ranked_voting::Vote>> {
+//     let p = path.clone();
+//     let mut workbook: Xlsx<_> =
+//         open_workbook(p).context(OpeningExcelSnafu { path: path.clone() })?;
+//     let wrange = workbook
+//         .worksheet_range_at(0)
+//         .context(EmptyExcelSnafu {})?
+//         .context(OpeningExcelSnafu { path })?;
 
-    // .ok_or(CError::Msg("Missing first sheet"))??;
-    let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
-    debug!("header: {:?}", header);
-    let start_range = cfs.first_vote_column_index()?;
+//     // .ok_or(CError::Msg("Missing first sheet"))??;
+//     let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
+//     debug!("header: {:?}", header);
+//     let start_range = cfs.first_vote_column_index()?;
 
-    let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
+//     let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
 
-    let mut iter = wrange.rows();
-    // TODO check for correctness
-    iter.next();
-    let mut res: Vec<Vote> = Vec::new();
-    for row in iter {
-        debug!("workbook: {:?}", row);
-        // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
-        let choices = &row[start_range..];
-        let mut cs: Vec<BallotChoice> = Vec::new();
-        for elt in choices {
-            let bc = read_choice_calamine(elt, &candidate_names, cfs)?;
-            cs.push(bc)
-        }
-        // TODO implement count
-        let count: u64 = match None {
-            Some(calamine::DataType::Float(f)) => f as u64,
-            Some(calamine::DataType::Int(i)) => i as u64,
-            Some(_) => {
-                whatever!("wrong type")
-            }
-            None => 1,
-        };
-        if let Some(v) = create_vote(&"NO ID".to_string(), count, &cs, rules)? {
-            res.push(v);
-        }
-    }
-    Ok(res)
-}
+//     let mut iter = wrange.rows();
+//     // TODO check for correctness
+//     iter.next();
+//     let mut res: Vec<Vote> = Vec::new();
+//     for row in iter {
+//         debug!("workbook: {:?}", row);
+//         // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
+//         let choices = &row[start_range..];
+//         let mut cs: Vec<BallotChoice> = Vec::new();
+//         for elt in choices {
+//             let bc = read_choice_calamine(elt, &candidate_names, cfs)?;
+//             cs.push(bc)
+//         }
+//         // TODO implement count
+//         let count: u64 = match None {
+//             Some(calamine::DataType::Float(f)) => f as u64,
+//             Some(calamine::DataType::Int(i)) => i as u64,
+//             Some(_) => {
+//                 whatever!("wrong type")
+//             }
+//             None => 1,
+//         };
+//         if let Some(v) = create_vote(&"NO ID".to_string(), count, &cs, rules)? {
+//             res.push(v);
+//         }
+//     }
+//     Ok(res)
+// }
 
-fn read_choice_calamine(
-    cell: &calamine::DataType,
-    candidates: &HashSet<String>,
-    source_setting: &FileSource,
-) -> RcvResult<BallotChoice> {
-    match cell {
-        calamine::DataType::String(s) if candidates.contains(s) => {
-            Ok(BallotChoice::Candidate(s.clone()))
-        }
-        calamine::DataType::String(s) if s == "UWI" => Ok(BallotChoice::UndeclaredWriteIn),
-        calamine::DataType::String(s)
-            if s.is_empty()
-                && source_setting
-                    .treat_blank_as_undeclared_write_in
-                    .unwrap_or(false) =>
-        {
-            Ok(BallotChoice::UndeclaredWriteIn)
-        }
-        calamine::DataType::String(s) if source_setting.undervote_label == Some(s.clone()) => {
-            Ok(BallotChoice::Undervote)
-        }
-        calamine::DataType::String(s) => {
-            if let Some(delim) = source_setting.overvote_delimiter.clone() {
-                if s.contains(&delim) {
-                    return Ok(BallotChoice::Overvote);
-                }
-            }
-            whatever!("Wrong data type: {:?}", s)
-        }
-        calamine::DataType::Empty => Ok(BallotChoice::Undervote),
-        _ => whatever!(
-            "TODO MSG:read_choice_calamine: could not understand cell {:?}",
-            cell
-        ),
-    }
-}
+// fn read_choice_calamine(
+//     cell: &calamine::DataType,
+//     candidates: &HashSet<String>,
+//     source_setting: &FileSource,
+// ) -> RcvResult<BallotChoice> {
+//     match cell {
+//         calamine::DataType::String(s) if candidates.contains(s) => {
+//             Ok(BallotChoice::Candidate(s.clone()))
+//         }
+//         calamine::DataType::String(s) if s == "UWI" => Ok(BallotChoice::UndeclaredWriteIn),
+//         calamine::DataType::String(s)
+//             if s.is_empty()
+//                 && source_setting
+//                     .treat_blank_as_undeclared_write_in
+//                     .unwrap_or(false) =>
+//         {
+//             Ok(BallotChoice::UndeclaredWriteIn)
+//         }
+//         calamine::DataType::String(s) if source_setting.undervote_label == Some(s.clone()) => {
+//             Ok(BallotChoice::Undervote)
+//         }
+//         calamine::DataType::String(s) => {
+//             if let Some(delim) = source_setting.overvote_delimiter.clone() {
+//                 if s.contains(&delim) {
+//                     return Ok(BallotChoice::Overvote);
+//                 }
+//             }
+//             whatever!("Wrong data type: {:?}", s)
+//         }
+//         calamine::DataType::Empty => Ok(BallotChoice::Undervote),
+//         _ => whatever!(
+//             "TODO MSG:read_choice_calamine: could not understand cell {:?}",
+//             cell
+//         ),
+//     }
+// }
