@@ -31,17 +31,14 @@ jobs:
 
       - name: Lint
         run: |
-          cd timrcv
           cargo fmt -- --check
           cargo clippy -- -D warnings          
 
       - name: Test
         run: |
-          cd timrcv
           cargo check
           cargo test --all          
 
       - name: Build
         run: |
-          cd timrcv
           cargo build --release          
