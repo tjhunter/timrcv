@@ -101,6 +101,7 @@ pub enum EliminationAlgorithm {
 #[derive(Eq, PartialEq, Debug, Clone, Copy)]
 pub enum MaxSkippedRank {
     Unlimited,
+    ExhaustOnFirstOccurence,
     MaxAllowed(u32),
 }
 

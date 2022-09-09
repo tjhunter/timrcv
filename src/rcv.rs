@@ -437,9 +437,7 @@ fn validate_rules(rcv_rules: &RcvRules) -> RcvResult<VoteRules> {
         },
         max_skipped_rank_allowed: match rcv_rules.max_skipped_ranks_allowed.as_str() {
             "unlimited" => MaxSkippedRank::Unlimited,
-            "0" => {
-                whatever!("Value 0 not allowed for maxSkippedRanksAllowed")
-            }
+            "0" => MaxSkippedRank::ExhaustOnFirstOccurence,
             x => match x.parse() {
                 Ok(num) => MaxSkippedRank::MaxAllowed(num),
                 _ => {

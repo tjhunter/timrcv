@@ -27,7 +27,7 @@ fn main() -> ExitCode {
 
     let _args = Args::parse();
 
-    test_wrapper("test_set_1_exhaust_at_overvote");
+    test_wrapper("tiebreak_use_permutation_in_config_test");
     ExitCode::SUCCESS
 
     // let r = rcv::run_election("/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data/duplicate_test/duplicate_test_config.json".to_string(),

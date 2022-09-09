@@ -347,7 +347,9 @@ fn round_result_to_stat(
     if let Some((uwi_transfers, uwi_exhauster)) = stats.uwi_elimination_stats.clone() {
         let uwi_tally: VoteCount =
             uwi_transfers.iter().map(|(_, vc)| *vc).sum::<VoteCount>() + uwi_exhauster;
-        rs.tally.push((uwi.clone(), uwi_tally.0));
+        if uwi_tally > VoteCount::EMPTY {
+            rs.tally.push((uwi.clone(), uwi_tally.0));
+        }
         let mut pub_transfers: Vec<(String, u64)> = Vec::new();
         for (t_cid, t_count) in uwi_transfers.iter() {
             let t_name: &String = candidates_by_id
@@ -821,6 +823,15 @@ fn advance_voting(
         }
 
         // Skipped rank rule
+        if skipped_ranks == MaxSkippedRank::ExhaustOnFirstOccurence {
+            let has_skippable_elements = initial_slice
+                .iter()
+                .any(|choice| matches!(choice, Choice::Blank | Choice::Undervote));
+            if has_skippable_elements {
+                return None;
+            }
+        }
+
         if let MaxSkippedRank::MaxAllowed(range_len) = skipped_ranks {
             let mut start_skipped_block: Option<usize> = None;
             let rl = range_len as usize;
