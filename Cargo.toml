@@ -1,0 +1,29 @@
+[package]
+name = "ranked-voting"
+version = "0.1.0"
+edition = "2021"
+# author = ["Tim Hunter <tjhunter@cs.stanford.edu>"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[workspace]
+
+[[bin]]
+name = "timrcv"
+path = "src/main.rs"
+
+[dependencies]
+ranked_voting = { path = "ranked_voting" }
+log = "0.4"
+env_logger = "0.9"
+calamine = "0.18"
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# anyhow = "1.0"
+text-diff = "0.4"
+clap = { version = "3.2.20", features = ["derive"] }
+snafu = "0.7"
+
+# dev
+# datatest = "0.7.1" #would be nice but is not in rust stable yet
