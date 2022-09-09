@@ -598,8 +598,10 @@ fn find_eliminated_candidates(
     num_round: u32,
 ) -> (Vec<CandidateId>, TiebreakSituation) {
     // Try to eliminate candidates in batch
-    if let Some(v) = find_eliminated_candidates_batch(tally) {
-        return (v, TiebreakSituation::Clean);
+    if rules.elimination_algorithm == EliminationAlgorithm::Batch {
+        if let Some(v) = find_eliminated_candidates_batch(tally) {
+            return (v, TiebreakSituation::Clean);
+        }
     }
 
     if let Some((v, tb)) =
