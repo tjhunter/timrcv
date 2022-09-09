@@ -73,7 +73,6 @@ pub fn read_json(path: String) -> BRcvResult<Vec<ParsedBallot>> {
                     count: Some(count),
                     choices,
                 };
-                debug!("read_json: parsed ballot: {:?}", b.clone());
                 ballots.push(b);
             }
         }

@@ -418,10 +418,6 @@ fn compute_tally(
         tally.insert(*cid, VoteCount::EMPTY);
     }
     for v in votes.iter() {
-        // DEBUG
-        if v.candidates.first_valid == (CandidateId(3)) {
-            debug!("run_one_round: {:?}", v.clone());
-        }
         if let Some(vc) = tally.get_mut(&v.candidates.first_valid) {
             *vc += v.count;
         }
@@ -623,10 +619,6 @@ fn find_eliminated_candidates_batch(
     let mut sorted_tally: Vec<(CandidateId, VoteCount)> =
         tally.iter().map(|(&cid, &vc)| (cid, vc)).collect();
     sorted_tally.sort_by_key(|(_, vc)| *vc);
-    debug!(
-        "find_eliminated_candidates_batch: sorted_tally: {:?}",
-        sorted_tally
-    );
 
     // the vote count for this candidate and the cumulative count (excluding the current one)
     let mut sorted_tally_cum: Vec<(CandidateId, VoteCount, VoteCount)> = Vec::new();
@@ -648,10 +640,6 @@ fn find_eliminated_candidates_batch(
         .enumerate()
         .filter(|(_, (_, cur_vc, previous_cum_count))| previous_cum_count < cur_vc)
         .last();
-    debug!(
-        "find_eliminated_candidates_batch: large_gap_idx: {:?}",
-        large_gap_idx
-    );
 
     // The idx == 0 element is not relevant because the previous cumulative count was zero.
     if let Some((idx, _)) = large_gap_idx {
@@ -719,19 +707,11 @@ fn find_eliminated_candidates_single(
     // Look at the tiebreak mode:
     let mut sorted_candidates: Vec<CandidateId> = match tiebreak {
         TieBreakMode::UseCandidateOrder => {
-            debug!(
-                "find_eliminated_candidates_single: candidate_names: {:?}",
-                candidate_names
-            );
             let candidate_order: HashMap<CandidateId, usize> = candidate_names
                 .iter()
                 .enumerate()
                 .map(|(idx, (_, cid))| (*cid, idx))
                 .collect();
-            debug!(
-                "find_eliminated_candidates_single: candidate_order: {:?}",
-                candidate_order
-            );
             let mut res = all_smallest;
             res.sort_by_key(|cid| candidate_order.get(cid).unwrap());
             // For loser selection, the selection is done in reverse order according to the reference implementation.
