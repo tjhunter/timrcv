@@ -9,11 +9,6 @@ use std::{
 
 pub use crate::config::*;
 
-pub const UWI: &str = "UNDECLARED_WRITE_IN";
-
-/// A blank vote (undervote). It can be inserted to continue with the tally.
-pub const UNDERVOTE: &str = "BLANK";
-
 // **** Private structures ****
 
 type RoundId = u32;

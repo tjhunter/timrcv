@@ -77,13 +77,7 @@ fn result_stats_to_json(rs: &VotingResult) -> Vec<JSValue> {
         let round_stat = _round_stat.clone();
         let mut tally: JSMap<String, JSValue> = JSMap::new();
         for (name, count) in round_stat.tally {
-            let name2 = if name == UWI {
-                "Undeclared Write-ins".to_string()
-            } else {
-                name.clone()
-            };
-
-            tally.insert(name2, json!(count.to_string()));
+            tally.insert(name.clone(), json!(count.to_string()));
         }
 
         let mut tally_results: Vec<JSValue> = Vec::new();
@@ -102,13 +96,8 @@ fn result_stats_to_json(rs: &VotingResult) -> Vec<JSValue> {
             }
             // The eliminated candidates are not output for the last round.
             if idx < num_rounds - 1 {
-                let name2 = if elim_stats.name == UWI {
-                    "Undeclared Write-ins".to_string()
-                } else {
-                    elim_stats.name.clone()
-                };
                 tally_results.push(json!({
-                    "eliminated": name2,
+                    "eliminated": elim_stats.name.clone(),
                     "transfers": transfers
                 }));
             }
