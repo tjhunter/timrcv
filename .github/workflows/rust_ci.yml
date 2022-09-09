@@ -10,6 +10,9 @@ on:
     branches:
       - master
 
+env:
+  RCV_TEST_DIR: rcv/src/test/resources/network/brightspots/rcv/test_data
+
 jobs:
 
   test_phaser:
@@ -34,8 +37,17 @@ jobs:
           cargo fmt -- --check
           cargo clippy -- -D warnings          
 
+      - name: Clone the official repository of RCVTab
+        uses: actions/checkout@v2
+        with:
+          repository: BrightSpots/rcv
+          path: rcv
+          ref: master
+
       - name: Test
         run: |
+          ls -la *.*
+          ls -la rcv/*
           cargo check
           cargo test --all          
 
