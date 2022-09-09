@@ -8,11 +8,14 @@ on:
       - main
   pull_request:
     branches:
-      - master
+      - main
+
+env:
+  RCV_TEST_DIR: rcv/src/test/resources/network/brightspots/rcv/test_data
 
 jobs:
 
-  test_phaser:
+  test_main:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -21,7 +24,7 @@ jobs:
         run: |
           rustup update
           rustup component add clippy
-          rustup install nightly          
+          rustup install stable          
 
       - name: Toolchain info
         run: |
@@ -34,11 +37,18 @@ jobs:
           cargo fmt -- --check
           cargo clippy -- -D warnings          
 
+      - name: Clone the official repository of RCVTab
+        uses: actions/checkout@v2
+        with:
+          repository: BrightSpots/rcv
+          path: rcv
+          ref: master
+
       - name: Test
         run: |
           cargo check
-          cargo test --all          
+          cargo test
 
       - name: Build
         run: |
-          cargo build --release          
+          cargo build --release
