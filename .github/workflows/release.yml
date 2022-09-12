@@ -25,12 +25,17 @@ jobs:
       - name: Build
         run: |
           echo "RG_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          echo "GITHUB_ENV:"
+          echo "$GITHUB_ENV:"
           echo "version is: ${{ env.RG_VERSION }}"
           staging="timrcv-linux-${{ env.RG_VERSION }}"
           mkdir -p "$staging"
           cargo build --all --release 
           strip target/release/timrcv 
           mv target/release/timrcv "$staging/"
+          echo "Artifacts to be packaged:"
+          echo $staging
+          ls $staging/*
           tar czf "$staging.tar.gz" "$staging"
           echo "ASSET=$staging.tar.gz" >> $GITHUB_ENV
 
