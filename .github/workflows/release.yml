@@ -56,7 +56,8 @@ jobs:
           default: true
           override: true
 
-      - name: Build
+      - name: Build for Windows
+        run: |
           staging="timrcv-windows"
           mkdir -p "$staging"
           cargo build --all --release 
