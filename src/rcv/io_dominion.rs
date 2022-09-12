@@ -55,7 +55,7 @@ pub fn read_dominion(path: &str) -> BRcvResult<Vec<ParsedBallot>> {
             // TODO: print something when the ballot is completely empty
             let max_sels = ranks.iter().map(|(_, rank)| *rank).max().unwrap_or(0);
             let mut choices: Vec<Vec<String>> = vec![];
-            for _ in 1..max_sels {
+            for _ in 0..max_sels {
                 choices.push(vec![]);
             }
             for (cname, rank) in ranks.iter() {
