@@ -623,43 +623,40 @@ mod tests {
     }
 
     #[test]
-    // #[ignore = "TODO P1 more permissive input"]
+    #[ignore = "TODO GH-17"]
     fn continue_tabulation_test() {
         test_wrapper("continue_tabulation_test");
     }
 
     #[test]
-    // #[ignore]
+    #[ignore = "GH-17"]
     fn continue_until_two_with_batch_elimination_test() {
         test_wrapper("continue_until_two_with_batch_elimination_test");
     }
 
     #[test]
-    #[ignore = "TODO implement dominion input"]
     fn dominion_alaska() {
         test_wrapper("dominion_alaska");
     }
 
     #[test]
-    // #[ignore = "TODO implement dominion input"]
+    #[ignore = "TODO GH-15"]
     fn dominion_kansas() {
         test_wrapper("dominion_kansas");
     }
 
     #[test]
-    // #[ignore = "TODO implement dominion input"]
+    #[ignore = "TODO GH-10"]
     fn dominion_multi_file() {
         test_wrapper("dominion_multi_file");
     }
 
     #[test]
-    // #[ignore = "TODO implement dominion input"]
     fn dominion_no_precinct_data() {
         test_wrapper("dominion_no_precinct_data");
     }
 
     #[test]
-    // #[ignore = "TODO implement dominion input"]
     fn dominion_wyoming() {
         test_wrapper("dominion_wyoming");
     }
@@ -742,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    // #[ignore = "TODO P1 incomplete test, investigate failure mode"]
+    #[ignore = "TODO GH-16"]
     fn no_one_meets_minimum() {
         test_wrapper("no_one_meets_minimum");
     }
