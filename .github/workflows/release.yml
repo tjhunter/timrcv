@@ -38,8 +38,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: |
-            timrcv-linux.tar.gz
+          files: timrcv-linux.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -58,13 +57,20 @@ jobs:
           override: true
 
       - name: Build
-        run: cargo build --all --release
+          staging="timrcv-windows"
+          mkdir -p "$staging"
+          cargo build --all --release 
+          mv target/release/timrcv.exe "$staging/"
+          echo "Artifacts to be packaged:"
+          echo $staging
+          ls $staging/*
+          7z a "$staging.zip" "$staging"
 
       - name: Release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: target/release/timrcv.exe
+          files: timrcv-windows.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -84,13 +90,21 @@ jobs:
           override: true
 
       - name: Build for mac
-        run: cargo build --all --release && strip target/release/timrcv && mv target/release/timrcv target/release/timrcv_darwin
+        run: |
+          staging="timrcv-macos"
+          mkdir -p "$staging"
+          cargo build --all --release 
+          strip target/release/timrcv 
+          mv target/release/timrcv "$staging/"
+          echo "Artifacts to be packaged:"
+          echo $staging
+          ls $staging/*
+          tar czf "$staging.tar.gz" "$staging"
 
       - name: Release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: |
-            target/release/timrcv_darwin
+          files: timrcv-macos.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
