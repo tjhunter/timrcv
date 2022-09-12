@@ -24,11 +24,7 @@ jobs:
 
       - name: Build
         run: |
-          echo "RG_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-          echo "GITHUB_ENV:"
-          echo "$GITHUB_ENV:"
-          echo "version is: ${{ env.RG_VERSION }}"
-          staging="timrcv-linux-${{ env.RG_VERSION }}"
+          staging="timrcv-linux"
           mkdir -p "$staging"
           cargo build --all --release 
           strip target/release/timrcv 
@@ -37,14 +33,13 @@ jobs:
           echo $staging
           ls $staging/*
           tar czf "$staging.tar.gz" "$staging"
-          echo "ASSET=$staging.tar.gz" >> $GITHUB_ENV
 
       - name: Release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            ${{ env.asset }}
+            timrcv-linux.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
