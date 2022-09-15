@@ -47,7 +47,10 @@ pub enum RcvError {
     #[snafu(display(""))]
     DominionParsingCandidateId { source: std::num::ParseIntError },
     #[snafu(display(""))]
-    OpeningJson { source: std::io::Error },
+    OpeningJson {
+        source: std::io::Error,
+        path: String,
+    },
     #[snafu(display(""))]
     ParsingJson { source: serde_json::Error },
 
@@ -59,6 +62,20 @@ pub enum RcvError {
     #[snafu(display("ID may not be less than 10, but it was {id}"))]
     InvalidId { id: u16 },
 
+    #[snafu(display(""))]
+    ConfigOpeningJson { source: std::io::Error },
+
+    // Reference errors
+    #[snafu(display(""))]
+    ReferenceOpeningFile { source: Box<RcvError> },
+
+    // Summary errors
+    #[snafu(display(""))]
+    SummaryWrite {
+        source: std::io::Error,
+        path: String,
+    },
+
     #[snafu(whatever, display("{message}"))]
     Whatever {
         message: String,
@@ -67,7 +84,7 @@ pub enum RcvError {
     },
 }
 
-type RcvResult<T> = Result<T, RcvError>;
+pub type RcvResult<T> = Result<T, RcvError>;
 type BRcvResult<T> = Result<T, Box<RcvError>>;
 
 fn result_stats_to_json(rs: &VotingResult) -> Vec<JSValue> {
@@ -229,8 +246,8 @@ pub mod config_reader {
         pub rules: RcvRules,
     }
 
-    pub fn read_summary(path: String) -> RcvResult<JSValue> {
-        let contents = fs::read_to_string(path).context(OpeningJsonSnafu {})?;
+    pub fn read_summary(path: String) -> BRcvResult<JSValue> {
+        let contents = fs::read_to_string(path.clone()).context(OpeningJsonSnafu { path })?;
         // debug!("read content: {:?}", contents);
         let mut js: JSValue =
             serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?;
@@ -487,9 +504,16 @@ fn build_summary_js(config: &RcvConfig, rv: &VotingResult) -> JSValue {
          "results": result_stats_to_json(rv) })
 }
 
-pub fn run_election(config_path: String, check_summary_path: Option<String>) -> RcvResult<()> {
+// override_out_path: used in test mode to disregard any output to disk.
+pub fn run_election(
+    config_path: String,
+    check_summary_path: Option<String>,
+    out_path: Option<String>,
+    override_out_path: bool,
+) -> RcvResult<()> {
     let config_p = Path::new(config_path.as_str());
-    let config_str = fs::read_to_string(config_path.clone()).context(OpeningJsonSnafu {})?;
+    debug!("Opening file {:?}", config_p);
+    let config_str = fs::read_to_string(config_path.clone()).context(ConfigOpeningJsonSnafu {})?;
     let config: RcvConfig = serde_json::from_str(&config_str).context(ParsingJsonSnafu {})?;
     let config2 = config.clone();
     info!("run_election: config: {:?}", config);
@@ -540,13 +564,12 @@ pub fn run_election(config_path: String, check_summary_path: Option<String>) -> 
     // Assemble the final json
     let result_js = build_summary_js(&config2, &result);
 
-    // TODO
     let pretty_js_stats = serde_json::to_string_pretty(&result_js).context(ParsingJsonSnafu {})?;
-    println!("stats:{}", pretty_js_stats);
+    debug!("stats:{}", pretty_js_stats);
 
     // The reference summary, if provided for comparison
-    if let Some(summary_p) = check_summary_path {
-        let summary_ref = read_summary(summary_p)?;
+    if let Some(ref_summary_path) = check_summary_path {
+        let summary_ref = read_summary(ref_summary_path).context(ReferenceOpeningFileSnafu {})?;
         let pretty_js_summary_ref =
             serde_json::to_string_pretty(&summary_ref).context(ParsingJsonSnafu {})?;
         if pretty_js_summary_ref != pretty_js_stats {
@@ -557,6 +580,28 @@ pub fn run_election(config_path: String, check_summary_path: Option<String>) -> 
                 "\n",
             );
             whatever!("Difference detected between calculated summary and reference summary")
+        }
+    }
+
+    let default_out_path = config.output_settings.output_directory.map(|p| {
+        let pb: PathBuf = vec![p, "summary.json".to_string()].iter().collect();
+        pb.as_os_str().to_str().unwrap().to_string()
+    });
+
+    if let Some(out_p) = if override_out_path {
+        out_path
+    } else {
+        out_path.or(default_out_path)
+    } {
+        if out_p == "stdout" {
+            print!("{}", pretty_js_stats);
+        } else if out_p.is_empty() {
+        } else {
+            debug!("Writing output to {}", out_p);
+            fs::write(out_p.clone(), pretty_js_stats).context(SummaryWriteSnafu {
+                path: out_p.clone(),
+            })?;
+            info!("Output written to {}", out_p);
         }
     }
 
@@ -571,10 +616,12 @@ fn run_election_test(test_name: &str, config_lpath: &str, summary_lpath: &str) {
     let res = run_election(
         format!("{}/{}/{}", test_dir, test_name, config_lpath),
         Some(format!("{}/{}/{}", test_dir, test_name, summary_lpath)),
+        None,
+        true,
     );
     if let Err(e) = res {
         warn!("Error occured {:?}", e);
-        eprintln!("An error occured {}", e);
+        eprintln!("An error occured {:?}", e);
         if let Some(bt) = ErrorCompat::backtrace(&e) {
             eprintln!("trace: {}", bt);
         } else {
