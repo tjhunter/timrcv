@@ -55,7 +55,6 @@ pub fn read_dominion(path: &str) -> BRcvResult<Vec<ParsedBallot>> {
                     ranks.push((candidate_name.clone(), mark.rank));
                 }
             }
-
             let b = ParsedBallot {
                 id: None, // TODO
                 count: get_count(&num_votes),
