@@ -1,6 +1,9 @@
 use snafu::OptionExt;
 
-use crate::rcv::*;
+use crate::rcv::{
+    io_common::{assemble_choices, get_count},
+    *,
+};
 use std::collections::HashMap;
 
 pub fn read_dominion(path: &str) -> BRcvResult<Vec<ParsedBallot>> {
@@ -52,23 +55,11 @@ pub fn read_dominion(path: &str) -> BRcvResult<Vec<ParsedBallot>> {
                     ranks.push((candidate_name.clone(), mark.rank));
                 }
             }
-            // TODO: print something when the ballot is completely empty
-            let max_sels = ranks.iter().map(|(_, rank)| *rank).max().unwrap_or(0);
-            let mut choices: Vec<Vec<String>> = vec![];
-            for _ in 0..max_sels {
-                choices.push(vec![]);
-            }
-            for (cname, rank) in ranks.iter() {
-                if let Some(elt) = choices.get_mut((rank - 1) as usize) {
-                    elt.push(cname.clone());
-                }
-            }
-            // TODO: check that all the votes have the same weight
-            let count: u64 = *num_votes.first().unwrap_or(&0);
+
             let b = ParsedBallot {
                 id: None, // TODO
-                count: Some(count),
-                choices,
+                count: get_count(&num_votes),
+                choices: assemble_choices(&ranks),
             };
             debug!("ballot: {:?}", b.clone());
             ballots.push(b);

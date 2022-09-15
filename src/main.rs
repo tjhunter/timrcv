@@ -1,41 +1,48 @@
 pub mod rcv;
 
-use std::process::ExitCode;
-
-use crate::rcv::test_wrapper;
+use crate::rcv::run_election;
+use crate::rcv::RcvResult;
 
 use clap::Parser;
+
+use env_logger::Env;
 
 /// This is a ranked voting tabulation program.
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// First argument
+    /// (file path) The file containing the election data. (Only JSON election descriptions are currently supported)
     #[clap(short, long, value_parser)]
-    name: Option<String>,
+    data: String,
+    /// (file path) A reference file containing the outcome of an election in JSON format. If provided, timrcv will
+    /// check that the tabulated output matches the reference.
+    #[clap(short, long, value_parser)]
+    reference: Option<String>,
 
-    /// Number of times to greet
-    #[clap(short, long, value_parser, default_value_t = 1)]
-    count: u8,
+    /// (file path) If specified, the summary of the election will be written in JSON format to the given
+    /// location. Setting this option overrides what may be specified with the --data option.
+    #[clap(short, long, value_parser)]
+    out: Option<String>,
+
+    /// If passed as an argument, will turn on verbose logging to the standard output.
+    #[clap(long, takes_value = false)]
+    verbose: bool,
 }
 
 const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 
-fn main() -> ExitCode {
+fn main() -> RcvResult<()> {
     println!("This is timrcv version {}", VERSION.unwrap_or("unknown"));
-    env_logger::init();
 
-    let _args = Args::parse();
+    let args = Args::parse();
+    let env = Env::new().default_filter_or({
+        if args.verbose {
+            "debug"
+        } else {
+            "info"
+        }
+    });
+    let _ = env_logger::try_init_from_env(env);
 
-    test_wrapper("dominion_multi_file");
-    ExitCode::SUCCESS
-
-    // let r = rcv::run_election("/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data/duplicate_test/duplicate_test_config.json".to_string(),
-    //  Some("/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data/duplicate_test/duplicate_test_expected_summary.json".to_string()));
-
-    // if r.is_err() {
-    //     ExitCode::FAILURE
-    // } else {
-    //     ExitCode::SUCCESS
-    // }
+    run_election(args.data, args.reference, args.out, false).map(|_| ())
 }

@@ -1,5 +1,6 @@
 use snafu::OptionExt;
 
+use crate::rcv::io_common::{assemble_choices, get_count};
 use crate::rcv::*;
 use std::collections::HashMap;
 
@@ -42,7 +43,7 @@ pub fn read_json(path: String) -> BRcvResult<Vec<ParsedBallot>> {
         for snap in cvr.snapshots.iter() {
             for contest in snap.contests.iter() {
                 let mut num_votes: Vec<u64> = vec![];
-                let mut ranks: Vec<(String, u64)> = vec![];
+                let mut ranks: Vec<(String, u32)> = vec![];
                 for selection in contest.selection.iter() {
                     let candidate_name = candidateids_mapping
                         .get(&selection.selection_id)
@@ -52,26 +53,10 @@ pub fn read_json(path: String) -> BRcvResult<Vec<ParsedBallot>> {
                         ranks.push((candidate_name.clone(), pos.rank))
                     }
                 }
-                let max_sels = ranks
-                    .iter()
-                    .map(|(_, rank)| *rank)
-                    .max()
-                    .context(CdfParsingJsonSnafu {})?;
-                let mut choices: Vec<Vec<String>> = vec![];
-                for _ in 0..max_sels {
-                    choices.push(vec![]);
-                }
-                for (cname, rank) in ranks.iter() {
-                    if let Some(elt) = choices.get_mut((rank - 1) as usize) {
-                        elt.push(cname.clone());
-                    }
-                }
-                // TODO: check that all the votes have the same weight
-                let count: u64 = *num_votes.first().context(CdfParsingJsonSnafu {})?;
                 let b = ParsedBallot {
                     id: Some(format!("{}_{}", simplified_file_name, cvr.ballot_id)),
-                    count: Some(count),
-                    choices,
+                    count: get_count(&num_votes),
+                    choices: assemble_choices(&ranks),
                 };
                 ballots.push(b);
             }
@@ -86,7 +71,7 @@ struct CVRSelectionPosition {
     #[serde(rename = "NumberVotes")]
     pub num_votes: u64,
     #[serde(rename = "Rank")]
-    pub rank: u64,
+    pub rank: u32,
 }
 
 #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
