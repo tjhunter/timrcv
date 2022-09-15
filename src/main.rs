@@ -33,6 +33,8 @@ const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 
 fn main() -> RcvResult<()> {
     println!("This is timrcv version {}", VERSION.unwrap_or("unknown"));
+    println!("This software is not certificed. It may have some bugs. Do not use for official tabulation and certification of an election.");
+    println!("For official needs, consider using RCTab https://www.rcvresources.org/rctab");
 
     let args = Args::parse();
     let env = Env::new().default_filter_or({
