@@ -47,7 +47,10 @@ pub enum RcvError {
     #[snafu(display(""))]
     DominionParsingCandidateId { source: std::num::ParseIntError },
     #[snafu(display(""))]
-    OpeningJson { source: std::io::Error },
+    OpeningJson {
+        source: std::io::Error,
+        path: String,
+    },
     #[snafu(display(""))]
     ParsingJson { source: serde_json::Error },
 
@@ -60,7 +63,15 @@ pub enum RcvError {
     InvalidId { id: u16 },
 
     #[snafu(display(""))]
-    WriteSummary {
+    ConfigOpeningJson { source: std::io::Error },
+
+    // Reference errors
+    #[snafu(display(""))]
+    ReferenceOpeningFile { source: Box<RcvError> },
+
+    // Summary errors
+    #[snafu(display(""))]
+    SummaryWrite {
         source: std::io::Error,
         path: String,
     },
@@ -235,8 +246,8 @@ pub mod config_reader {
         pub rules: RcvRules,
     }
 
-    pub fn read_summary(path: String) -> RcvResult<JSValue> {
-        let contents = fs::read_to_string(path).context(OpeningJsonSnafu {})?;
+    pub fn read_summary(path: String) -> BRcvResult<JSValue> {
+        let contents = fs::read_to_string(path.clone()).context(OpeningJsonSnafu { path })?;
         // debug!("read content: {:?}", contents);
         let mut js: JSValue =
             serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?;
@@ -502,7 +513,7 @@ pub fn run_election(
 ) -> RcvResult<()> {
     let config_p = Path::new(config_path.as_str());
     debug!("Opening file {:?}", config_p);
-    let config_str = fs::read_to_string(config_path.clone()).context(OpeningJsonSnafu {})?;
+    let config_str = fs::read_to_string(config_path.clone()).context(ConfigOpeningJsonSnafu {})?;
     let config: RcvConfig = serde_json::from_str(&config_str).context(ParsingJsonSnafu {})?;
     let config2 = config.clone();
     info!("run_election: config: {:?}", config);
@@ -557,8 +568,9 @@ pub fn run_election(
     debug!("stats:{}", pretty_js_stats);
 
     // The reference summary, if provided for comparison
-    if let Some(summary_p) = check_summary_path {
-        let summary_ref = read_summary(summary_p)?;
+    if let Some(ref_summary_path) = check_summary_path {
+        let summary_ref =
+            read_summary(ref_summary_path.clone()).context(ReferenceOpeningFileSnafu {})?;
         let pretty_js_summary_ref =
             serde_json::to_string_pretty(&summary_ref).context(ParsingJsonSnafu {})?;
         if pretty_js_summary_ref != pretty_js_stats {
@@ -587,7 +599,7 @@ pub fn run_election(
         } else if out_p.is_empty() {
         } else {
             debug!("Writing output to {}", out_p);
-            fs::write(out_p.clone(), pretty_js_stats).context(WriteSummarySnafu {
+            fs::write(out_p.clone(), pretty_js_stats).context(SummaryWriteSnafu {
                 path: out_p.clone(),
             })?;
             info!("Output written to {}", out_p);

@@ -15,7 +15,9 @@ pub fn read_dominion(path: &str) -> BRcvResult<Vec<ParsedBallot>> {
             cvr_export_path
         );
 
-        let contents = fs::read_to_string(cvr_export_path.clone()).context(OpeningJsonSnafu {})?;
+        let contents = fs::read_to_string(cvr_export_path.clone()).context(OpeningJsonSnafu {
+            path: cvr_export_path.clone(),
+        })?;
         debug!("Read rank file {:?}", cvr_export_path);
         serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?
     };
@@ -25,7 +27,9 @@ pub fn read_dominion(path: &str) -> BRcvResult<Vec<ParsedBallot>> {
         let cvr_export_path = p.as_path().display().to_string();
         info!("Attempting to read rank file {:?}", cvr_export_path);
 
-        let contents = fs::read_to_string(cvr_export_path.clone()).context(OpeningJsonSnafu {})?;
+        let contents = fs::read_to_string(cvr_export_path.clone()).context(OpeningJsonSnafu {
+            path: cvr_export_path.clone(),
+        })?;
         debug!("Read rank file {:?}", cvr_export_path);
         serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?
     };

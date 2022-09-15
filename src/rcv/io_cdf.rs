@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use crate::rcv::io_common::simplify_file_name;
 
 pub fn read_json(path: String) -> BRcvResult<Vec<ParsedBallot>> {
-    let contents = fs::read_to_string(path.clone()).context(OpeningJsonSnafu {})?;
+    let contents =
+        fs::read_to_string(path.clone()).context(OpeningJsonSnafu { path: path.clone() })?;
 
     let cvrr: CastVoteRecordReport =
         serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?;
