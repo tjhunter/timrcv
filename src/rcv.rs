@@ -569,8 +569,7 @@ pub fn run_election(
 
     // The reference summary, if provided for comparison
     if let Some(ref_summary_path) = check_summary_path {
-        let summary_ref =
-            read_summary(ref_summary_path.clone()).context(ReferenceOpeningFileSnafu {})?;
+        let summary_ref = read_summary(ref_summary_path).context(ReferenceOpeningFileSnafu {})?;
         let pretty_js_summary_ref =
             serde_json::to_string_pretty(&summary_ref).context(ParsingJsonSnafu {})?;
         if pretty_js_summary_ref != pretty_js_stats {
