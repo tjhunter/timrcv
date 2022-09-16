@@ -147,11 +147,11 @@ pub fn run_voting_stats(
     rules: &config::VoteRules,
     candidates: &Option<Vec<config::Candidate>>,
 ) -> Result<VotingResult, VotingErrors> {
-    info!(
-        "Processing {:?} votes, candidates: {:?}, rules: {:?}",
+    info!("run_voting_stats: Processing {:?} votes", coll.len());
+    debug!(
+        "run_voting_stats: candidates: {:?}, rules: {:?}",
         coll.len(),
         candidates,
-        rules
     );
 
     // TODO: ensure candidates
@@ -162,7 +162,7 @@ pub fn run_voting_stats(
         checked_votes.len(),
         cr.count_exhausted_uwi_first_round
     );
-    let all_candidates = cr.candidates;
+    let all_candidates: Vec<(String, CandidateId)> = cr.candidates;
     {
         info!("Processing {:?} aggregated votes", checked_votes.len());
         let mut sorted_candidates: Vec<&(String, CandidateId)> = all_candidates.iter().collect();
@@ -184,15 +184,15 @@ pub fn run_voting_stats(
         .collect();
 
     // The candidates that are still running, in sorted order as defined by input.
-    let mut cur_sorted_candidates: Vec<(String, CandidateId)> = all_candidates;
+    let mut cur_sorted_candidates: Vec<(String, CandidateId)> = all_candidates.clone();
     let mut cur_votes: Vec<VoteInternal> = checked_votes;
     let mut cur_stats: Vec<RoundStatistics> = Vec::new();
 
     // TODO: better management of the number of iterations
     while cur_stats.iter().len() < 10000 {
         let round_id = (cur_stats.iter().len() + 1) as u32;
-        info!(
-            "Round id: {:?} cur_candidates: {:?}",
+        debug!(
+            "run_voting_stats: Round id: {:?} cur_candidates: {:?}",
             round_id, cur_sorted_candidates
         );
         let has_initial_uwis = cur_stats.is_empty()
@@ -211,7 +211,16 @@ pub fn run_voting_stats(
             run_one_round(&cur_votes, rules, &cur_sorted_candidates, round_id)?
         };
         let round_stats = round_res.stats.clone();
-        info!("Round id: {:?} stats: {:?}", round_id, round_stats);
+        debug!(
+            "run_voting_stats: Round id: {:?} stats: {:?}",
+            round_id, round_stats
+        );
+        print_round_stats(
+            round_id,
+            &round_stats,
+            &all_candidates,
+            round_res.vote_threshold,
+        );
 
         cur_votes = round_res.votes;
         cur_stats.push(round_res.stats);
@@ -267,6 +276,54 @@ pub fn run_voting_stats(
         }
     }
     Err(VotingErrors::NoConvergence)
+}
+
+fn print_round_stats(
+    round_id: RoundId,
+    stats: &RoundStatistics,
+    candidate_names: &[(String, CandidateId)],
+    vote_threshold: VoteCount,
+) {
+    info!(
+        "Round {} (winning threshold: {})",
+        round_id, vote_threshold.0
+    );
+    let mut sorted_candidates = stats.candidate_stats.clone();
+    sorted_candidates.sort_by_key(|(_, count, _)| -(count.0 as i64));
+    let fetch_name = |cid: &CandidateId| candidate_names.iter().find(|(_, cid2)| cid2 == cid);
+    for (cid, count, cstatus) in sorted_candidates.iter() {
+        if let Some((name, _)) = fetch_name(cid) {
+            let status = match cstatus {
+                RoundCandidateStatusInternal::Elected => "elected".to_string(),
+                RoundCandidateStatusInternal::StillRunning => "running".to_string(),
+                RoundCandidateStatusInternal::Eliminated(transfers, exhausted) => {
+                    let mut s = String::from("eliminated:");
+                    if *exhausted > VoteCount::EMPTY {
+                        s.push_str(format!("{} exhausted, ", exhausted.0).as_str());
+                    }
+                    for (tcid, vc) in transfers {
+                        if let Some((tname, _)) = fetch_name(tcid) {
+                            s.push_str(format!("{} -> {}, ", vc.0, tname).as_str());
+                        }
+                    }
+                    s
+                }
+            };
+            info!("{:7} {} -> {}", count.0, name, status);
+        }
+    }
+    if let Some((transfers, exhausted)) = stats.uwi_elimination_stats.clone() {
+        let mut s = String::from("undeclared candidates: ");
+        if exhausted > VoteCount::EMPTY {
+            s.push_str(format!("{} exhausted, ", exhausted.0).as_str());
+        }
+        for (tcid, vc) in transfers {
+            if let Some((tname, _)) = fetch_name(&tcid) {
+                s.push_str(format!("{} -> {}, ", vc.0, tname).as_str());
+            }
+        }
+        info!("        {}", s);
+    }
 }
 
 fn get_threshold(tally: &HashMap<CandidateId, VoteCount>) -> VoteCount {
