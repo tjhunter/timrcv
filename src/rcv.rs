@@ -516,7 +516,7 @@ pub fn run_election(
     let config_str = fs::read_to_string(config_path.clone()).context(ConfigOpeningJsonSnafu {})?;
     let config: RcvConfig = serde_json::from_str(&config_str).context(ParsingJsonSnafu {})?;
     let config2 = config.clone();
-    info!("run_election: config: {:?}", config);
+    debug!("run_election: config: {:?}", config);
 
     // Validate the rules:
     let rules = validate_rules(&config.rules)?;
