@@ -55,6 +55,6 @@ jobs:
 
       - name: Test release
         run: |
-          ./target/release/timrcv --data $RCV_TEST_DIR/2013_minneapolis_mayor_scale/2013_minneapolis_mayor_scale_config.json \
+          ./target/release/timrcv --config $RCV_TEST_DIR/2013_minneapolis_mayor_scale/2013_minneapolis_mayor_scale_config.json \
           --reference $RCV_TEST_DIR/2013_minneapolis_mayor_scale/2013_minneapolis_mayor_scale_expected_summary.json \
           --out /dev/null
