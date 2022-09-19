@@ -687,7 +687,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO GH-15"]
     fn dominion_kansas() {
         test_wrapper("dominion_kansas");
     }

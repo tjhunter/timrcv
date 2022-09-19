@@ -20,8 +20,7 @@ struct CandidateId(u32);
 // It simply means that this ballot will not be account for this turn.
 #[derive(Eq, PartialEq, Debug, Clone, Copy, Hash, Ord, PartialOrd)]
 enum Choice {
-    Blank,
-    Undervote,
+    BlankOrUndervote,
     Overvote,
     Undeclared,
     Filled(CandidateId),
@@ -812,7 +811,96 @@ fn find_eliminated_candidates_single(
     Some((sorted_candidates, TiebreakSituation::TiebreakOccured))
 }
 
+// All the failure modes when trying to read the next element in a ballot
+#[derive(Eq, PartialEq, Debug, Clone, Copy, Hash)]
+enum AdvanceRuleCheck {
+    DuplicateCandidates,
+    FailOvervote,
+    FailSkippedRank,
+}
+
+// True if the rules are respected
+fn check_advance_rules(
+    initial_slice: &[Choice],
+    duplicate_policy: DuplicateCandidateMode,
+    overvote: OverVoteRule,
+    skipped_ranks: MaxSkippedRank,
+) -> Option<AdvanceRuleCheck> {
+    if duplicate_policy == DuplicateCandidateMode::Exhaust {
+        let mut seen_cids: HashSet<CandidateId> = HashSet::new();
+        for choice in initial_slice.iter() {
+            match *choice {
+                Choice::Filled(cid) if seen_cids.contains(&cid) => {
+                    return Some(AdvanceRuleCheck::DuplicateCandidates);
+                }
+                Choice::Filled(cid) => {
+                    seen_cids.insert(cid);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Overvote rule
+    let has_initial_overvote = initial_slice.iter().any(|c| *c == Choice::Overvote);
+    if has_initial_overvote && overvote == OverVoteRule::ExhaustImmediately {
+        debug!(
+            "advance_voting: has initial overvote and exhausting {:?}",
+            initial_slice
+        );
+        return Some(AdvanceRuleCheck::FailOvervote);
+    }
+
+    // Skipped rank rule
+    if skipped_ranks == MaxSkippedRank::ExhaustOnFirstOccurence {
+        let has_skippable_elements = initial_slice
+            .iter()
+            .any(|choice| matches!(choice, Choice::BlankOrUndervote));
+        if has_skippable_elements {
+            debug!(
+                "advance_voting:exhaust on first blank occurence: {:?}",
+                initial_slice
+            );
+            return Some(AdvanceRuleCheck::FailSkippedRank);
+        }
+    }
+
+    if let MaxSkippedRank::MaxAllowed(range_len) = skipped_ranks {
+        let mut start_skipped_block: Option<usize> = None;
+        let rl = range_len as usize;
+        for (idx, choice) in initial_slice.iter().enumerate() {
+            match (choice, start_skipped_block) {
+                // We went beyond the threshold
+                (Choice::BlankOrUndervote, Some(start_idx)) if idx >= start_idx + rl => {
+                    debug!(
+                        "advance_voting:exhaust on multiple occurence: {:?}",
+                        initial_slice
+                    );
+                    return Some(AdvanceRuleCheck::FailSkippedRank);
+                }
+                // We are starting a new block
+                (Choice::BlankOrUndervote, None) => {
+                    start_skipped_block = Some(idx);
+                }
+                // We are exiting a block or encountering a new element. Reset.
+                _ => {
+                    start_skipped_block = None;
+                }
+            }
+        }
+    }
+
+    None
+}
+
 // The algorithm is lazy. It will only apply the rules up to finding the next candidate.
+// Returned bool indicades if UWI's were encountered in the move to the first valid candidate.
+// TODO: this function slightly deviates for the reference implementation in the following case:
+// (blanks 1) Undeclared (blanks 2) Filled(_) ...
+// The reference implementation will only validate up to Undeclared and this function will validate
+// up to Filled.
+// In practice, this will cause the current implementation to immediately discard a ballot, while the
+// reference implementation first assigns the ballot to UWI and then exhausts it.
 fn advance_voting(
     choices: &[Choice],
     still_valid: &HashSet<CandidateId>,
@@ -833,66 +921,47 @@ fn advance_voting(
         // overvote or multiple blanks occured.
         let initial_slice = &choices[..idx];
 
-        if duplicate_policy == DuplicateCandidateMode::Exhaust {
-            let mut seen_cids: HashSet<CandidateId> = HashSet::new();
-            for choice in initial_slice.iter() {
-                match *choice {
-                    Choice::Filled(cid) if seen_cids.contains(&cid) => {
-                        return None;
-                    }
-                    Choice::Filled(cid) => {
-                        seen_cids.insert(cid);
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Overvote rule
-        let has_initial_overvote = initial_slice.iter().any(|c| *c == Choice::Overvote);
-        if has_initial_overvote && overvote == OverVoteRule::ExhaustImmediately {
+        if check_advance_rules(initial_slice, duplicate_policy, overvote, skipped_ranks).is_some() {
             return None;
-        }
-
-        // Skipped rank rule
-        if skipped_ranks == MaxSkippedRank::ExhaustOnFirstOccurence {
-            let has_skippable_elements = initial_slice
-                .iter()
-                .any(|choice| matches!(choice, Choice::Blank | Choice::Undervote));
-            if has_skippable_elements {
-                return None;
-            }
-        }
-
-        if let MaxSkippedRank::MaxAllowed(range_len) = skipped_ranks {
-            let mut start_skipped_block: Option<usize> = None;
-            let rl = range_len as usize;
-            for (idx, choice) in initial_slice.iter().enumerate() {
-                match (choice, start_skipped_block) {
-                    // We went beyond the threshold
-                    (Choice::Blank, Some(start_idx)) if idx >= start_idx + rl => {
-                        return None;
-                    }
-                    (Choice::Undervote, Some(start_idx)) if idx >= start_idx + rl => {
-                        return None;
-                    }
-                    // We are starting a new block
-                    (Choice::Blank, None) => {
-                        start_skipped_block = Some(idx);
-                    }
-                    (Choice::Undervote, None) => {
-                        start_skipped_block = Some(idx);
-                    }
-                    // We are exiting a block or encountering a new element. Reset.
-                    _ => {
-                        start_skipped_block = None;
-                    }
-                }
-            }
         }
 
         let final_slice = &choices[idx + 1..];
         Some((*cid, final_slice.to_vec()))
+    } else {
+        None
+    }
+}
+
+// For the 1st round, the initial choice may also be undeclared.
+fn advance_voting_initial(
+    choices: &[Choice],
+    still_valid: &HashSet<CandidateId>,
+    duplicate_policy: DuplicateCandidateMode,
+    overvote: OverVoteRule,
+    skipped_ranks: MaxSkippedRank,
+) -> Option<Vec<Choice>> {
+    // Find a potential candidate.
+    let first_candidate: Option<usize> =
+        choices
+            .iter()
+            .enumerate()
+            .find_map(|(idx, choice)| match choice {
+                Choice::Filled(cid) if still_valid.contains(cid) => Some(idx),
+                Choice::Undeclared => Some(idx),
+                _ => None,
+            });
+    if let Some(idx) = first_candidate {
+        // A valid candidate was found, but still look in the initial slice to find if some
+        // overvote or multiple blanks occured.
+        let initial_slice = &choices[..idx];
+
+        if check_advance_rules(initial_slice, duplicate_policy, overvote, skipped_ranks).is_some() {
+            return None;
+        }
+
+        // This final slice includes the pivot element.
+        let final_slice = &choices[idx..];
+        Some(final_slice.to_vec())
     } else {
         None
     }
@@ -953,9 +1022,9 @@ fn checks(
                         Choice::Undeclared
                     }
                 }
-                BallotChoice::Blank => Choice::Blank,
+                BallotChoice::Blank => Choice::BlankOrUndervote,
+                BallotChoice::Undervote => Choice::BlankOrUndervote,
                 BallotChoice::Overvote => Choice::Overvote,
-                BallotChoice::Undervote => Choice::Undervote,
                 BallotChoice::UndeclaredWriteIn => Choice::Undeclared,
             };
             choices.push(choice);
@@ -963,35 +1032,51 @@ fn checks(
 
         let count = VoteCount(v.count);
         // The first choice is a valid one. A ballot can be constructed out of it.
-        if let Some(Choice::Filled(cid)) = choices.first() {
-            let candidates = RankedChoice {
-                first_valid: *cid,
-                rest: choices[1..].to_vec(),
-            };
-            validated_votes.push(VoteInternal { candidates, count });
-        } else if let Some((first_cid, rest)) = advance_voting(
+
+        let initial_advance_opt = advance_voting_initial(
             &choices,
             &valid_cids,
             rules.duplicate_candidate_mode,
             rules.overvote_rule,
             rules.max_skipped_rank_allowed,
-        ) {
-            let candidates = RankedChoice {
-                first_valid: first_cid,
-                rest,
-            };
-            // The ballot started with undeclared but could eventually be recovered
-            // with a valid candidate. Keep it.
-            if let Some(Choice::Undeclared) = choices.first() {
-                uwi_validated_votes.push(VoteInternal { candidates, count })
-            } else {
+        );
+
+        if let Some(initial_advance) = initial_advance_opt {
+            // Check the head of the ballot.
+            if let Some(Choice::Filled(cid)) = initial_advance.first() {
+                let candidates = RankedChoice {
+                    first_valid: *cid,
+                    rest: initial_advance[1..].to_vec(),
+                };
                 validated_votes.push(VoteInternal { candidates, count });
+            } else if let Some(Choice::Undeclared) = initial_advance.first() {
+                // Valid and first choice is undeclared. See if the rest is a valid vote.
+                if let Some((first_cid, rest)) = advance_voting(
+                    &initial_advance,
+                    &valid_cids,
+                    rules.duplicate_candidate_mode,
+                    rules.overvote_rule,
+                    rules.max_skipped_rank_allowed,
+                ) {
+                    // The vote is still valid by advancing, we keep it
+                    let candidates = RankedChoice {
+                        first_valid: first_cid,
+                        rest,
+                    };
+                    uwi_validated_votes.push(VoteInternal { candidates, count });
+                } else {
+                    // The vote was valid up to undeclared but not valid anymore after it.
+                    // Exhaust immediately.
+                    uwi_exhausted_first_round += count;
+                }
+            } else {
+                panic!(
+                    "checks: Should not reach this branch:choices: {:?} initial_advance: {:?}",
+                    choices, initial_advance
+                );
             }
         } else {
-            // The vote cannot be recovered. Just record it if it was an undeclared ballot.
-            if let Some(Choice::Undeclared) = choices.first() {
-                uwi_exhausted_first_round += VoteCount(v.count);
-            }
+            // Vote is being discarded, nothing to read in it with the given rules.
         }
     }
 

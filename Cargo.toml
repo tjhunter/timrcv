@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 # author = ["Tim Hunter <tjhunter@cs.stanford.edu>"]
 
+readme = "README.md"
+repository = "https://github.com/tjhunter/timrcv"
+description = "Tabulating program and library for all common voting format."
+categories = ["science"]
+keywords = ["irv", "tally", "election", "voting", "vote", "ballot"]
+
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [workspace]

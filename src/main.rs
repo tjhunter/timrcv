@@ -11,9 +11,9 @@ use env_logger::Env;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// (file path) The file containing the election data. (Only JSON election descriptions are currently supported)
+    /// (file path, optional) The file containing the election data. (Only JSON election descriptions are currently supported)
     #[clap(short, long, value_parser)]
-    data: String,
+    config: String,
     /// (file path) A reference file containing the outcome of an election in JSON format. If provided, timrcv will
     /// check that the tabulated output matches the reference.
     #[clap(short, long, value_parser)]
@@ -46,5 +46,5 @@ fn main() -> RcvResult<()> {
     });
     let _ = env_logger::try_init_from_env(env);
 
-    run_election(args.data, args.reference, args.out, false).map(|_| ())
+    run_election(args.config, args.reference, args.out, false).map(|_| ())
 }
