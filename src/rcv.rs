@@ -374,6 +374,10 @@ fn read_ranking_data(
         }
         "msforms_likert" => io_msforms::read_msforms_likert(p2, cfs, &cand_names)
             .context(OpeningFileSnafu { root_path })?,
+        "msforms_likert_transpose" => {
+            io_msforms::read_msforms_likert_transpose(p2, cfs, &cand_names)
+                .context(OpeningFileSnafu { root_path })?
+        }
         x => {
             return Err(RcvError::UnknownFormat {
                 format: x.to_string(),
@@ -1016,5 +1020,15 @@ mod tests {
     #[test]
     fn msforms_1() {
         test_wrapper_local("msforms_1");
+    }
+
+    #[test]
+    fn msforms_likert() {
+        test_wrapper_local("msforms_likert");
+    }
+
+    #[test]
+    fn msforms_likert_transpose() {
+        test_wrapper_local("msforms_likert_transpose");
     }
 }

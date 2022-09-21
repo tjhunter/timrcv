@@ -1,0 +1,49 @@
+{
+  "config": {
+    "contest": "MS Forms 1",
+    "date": "2020-07-19",
+    "jurisdiction": "Kansas",
+    "office": "test 1",
+    "threshold": "2"
+  },
+  "results": [
+    {
+      "round": 1,
+      "tally": {
+        "candidate 3-1": "1",
+        "candidate 3-2": "0",
+        "candidate 3-3": "1",
+        "candidate 3-4": "0",
+        "candidate 3-5": "0"
+      },
+      "tallyResults": []
+    },
+    {
+      "round": 2,
+      "tally": {
+        "candidate 3-1": "1",
+        "candidate 3-3": "1"
+      },
+      "tallyResults": [
+        {
+          "eliminated": "candidate 3-3",
+          "transfers": {
+            "candidate 3-1": "1"
+          }
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "tally": {
+        "candidate 3-1": "2"
+      },
+      "tallyResults": [
+        {
+          "elected": "candidate 3-1",
+          "transfers": {}
+        }
+      ]
+    }
+  ]
+}

@@ -71,38 +71,11 @@ pub fn read_msforms_likert(
 
     // Find the mapping between the columns and the candidate names.
     // Every candidate should have its name associated to a column
-    let col_names: HashMap<String, usize> = header
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, x)| match x {
-            calamine::DataType::String(s) => Some((s.clone(), idx)),
-            _ => None,
-        })
-        .collect();
-
-    debug!("read_msforms_likert: col_names: {:?}", col_names);
-
-    let mut col_indexes: Vec<(usize, String)> = Vec::new();
-    for cname in candidate_names {
-        let idx = col_names
-            .get(cname)
-            .context(ExcelCannotFindCandidateInHeaderSnafu {
-                candidate_name: cname,
-            })?;
-        col_indexes.push((*idx, cname.clone()));
-    }
+    let col_indexes = get_col_index(&candidate_names, &header)?;
 
     debug!("read_msforms_likert: col_indexes: {:?}", col_indexes);
 
-    let ranked_choices: HashMap<String, u32> = cfs
-        .choices
-        .clone()
-        .context(MissingChoicesSnafu {})?
-        .iter()
-        .enumerate()
-        // The ranks start at 1
-        .map(|(idx, s)| (s.clone(), (idx + 1) as u32))
-        .collect();
+    let ranked_choices: HashMap<String, u32> = get_ranked_choices(cfs)?.iter().cloned().collect();
 
     debug!("read_msforms_likert: ranked_choices: {:?}", ranked_choices);
 
@@ -153,6 +126,154 @@ pub fn read_msforms_likert(
         };
         res.push(pb);
     }
+    Ok(res)
+}
+
+pub fn read_msforms_likert_transpose(
+    path: String,
+    cfs: &FileSource,
+    candidate_names: &[String],
+) -> BRcvResult<Vec<ParsedBallot>> {
+    // The filename to add as a ballot id
+    let simplified_file_name = simplify_file_name(path.as_str());
+
+    let wrange = get_range(&path, cfs)?;
+
+    let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
+    debug!("read_msforms_likert_transpose: header: {:?}", header);
+
+    let ranked_choices: Vec<(String, u32)> = get_ranked_choices(cfs)?;
+    let choice_names: Vec<String> = ranked_choices.iter().map(|p| p.0.clone()).collect();
+
+    debug!(
+        "read_msforms_likert_transpose: ranked_choices: {:?}",
+        ranked_choices
+    );
+
+    // Find the mapping between the columns and the candidate names.
+    // Every candidate should have its name associated to a column
+    let col_indexes = get_col_index_choices(&choice_names, &header)?;
+
+    debug!(
+        "read_msforms_likert_transpose: col_indexes: {:?}",
+        col_indexes
+    );
+
+    let mut iter = wrange.rows();
+    // TODO check for correctness
+    // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
+    iter.next();
+    let mut res: Vec<ParsedBallot> = Vec::new();
+    for (idx, row) in iter.enumerate() {
+        debug!(
+            "read_msforms_likert_transpose: idx: {:?} row: {:?}",
+            idx, &row
+        );
+
+        let mut choices: Vec<(String, u32)> = Vec::new();
+        for (col_idx, rank) in col_indexes.iter() {
+            let v: calamine::DataType = row.get(*col_idx).cloned().context(EmptyExcelSnafu {})?;
+            match v {
+                calamine::DataType::String(cand_name) => {
+                    choices.push((cand_name.clone(), *rank));
+                }
+                calamine::DataType::Empty => {
+                    // No choice made, skip.
+                }
+                _ => {
+                    return Err(Box::new(RcvError::ExcelWrongCellType {
+                        lineno: idx as u64,
+                        content: format!("{:?} IN {:?}", v, row),
+                    }));
+                }
+            };
+        }
+        debug!(
+            "read_msforms_likert_transpose: idx: {:?} choices: {:?}",
+            idx, &choices
+        );
+        let choices_parsed = assemble_choices(&choices);
+
+        let pb = ParsedBallot {
+            id: Some(format!("{}-{:08}", simplified_file_name, idx)),
+            // MS forms are not expected to handle weights for the time being.
+            count: Some(1),
+            choices: choices_parsed,
+        };
+        res.push(pb);
+    }
+    Ok(res)
+}
+
+fn get_col_index(
+    req_col_names: &[String],
+    header: &[DataType],
+) -> BRcvResult<Vec<(usize, String)>> {
+    // Find the mapping between the columns and the candidate names.
+    // Every candidate should have its name associated to a column
+    let col_names: HashMap<String, usize> = header
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, x)| match x {
+            calamine::DataType::String(s) => Some((s.clone(), idx)),
+            _ => None,
+        })
+        .collect();
+
+    debug!("read_msforms_likert: col_names: {:?}", col_names);
+
+    let mut col_indexes: Vec<(usize, String)> = Vec::new();
+    for cname in req_col_names {
+        let idx = col_names
+            .get(cname)
+            .context(ExcelCannotFindCandidateInHeaderSnafu {
+                candidate_name: cname,
+            })?;
+        col_indexes.push((*idx, cname.clone()));
+    }
+    Ok(col_indexes)
+}
+
+// Maps a column index to a rank
+fn get_col_index_choices(
+    choice_names: &[String],
+    header: &[DataType],
+) -> BRcvResult<Vec<(usize, u32)>> {
+    // Find the mapping between the columns and the candidate names.
+    // Every candidate should have its name associated to a column
+    let col_names: HashMap<String, usize> = header
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, x)| match x {
+            calamine::DataType::String(s) => Some((s.clone(), idx)),
+            _ => None,
+        })
+        .collect();
+
+    debug!("read_msforms_likert: col_names: {:?}", col_names);
+
+    let mut col_indexes: Vec<(usize, u32)> = Vec::new();
+    for (idx, cname) in choice_names.iter().enumerate() {
+        let col_idx = col_names
+            .get(cname)
+            .context(ExcelCannotFindCandidateInHeaderSnafu {
+                candidate_name: cname,
+            })?;
+        col_indexes.push((*col_idx, (idx + 1) as u32));
+    }
+    Ok(col_indexes)
+}
+
+fn get_ranked_choices(cfs: &FileSource) -> BRcvResult<Vec<(String, u32)>> {
+    let res = cfs
+        .choices
+        .clone()
+        .context(MissingChoicesSnafu {})?
+        .iter()
+        .enumerate()
+        // The ranks start at 1
+        .map(|(idx, s)| (s.clone(), (idx + 1) as u32))
+        .collect();
     Ok(res)
 }
 
