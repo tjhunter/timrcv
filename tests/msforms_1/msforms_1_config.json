@@ -1,0 +1,43 @@
+{
+  "tabulatorVersion": "TEST",
+  "outputSettings": {
+    "contestName": "MS Forms 1",
+    "outputDirectory": "output",
+    "contestDate": "2020-07-19",
+    "contestJurisdiction": "Kansas",
+    "contestOffice": "test 1",
+    "tabulateByPrecinct": false,
+    "generateCdfJson": false
+  },
+  "cvrFileSources": [
+    {
+      "filePath": "../msforms_data.xlsx",
+      "provider": "msforms_ranking",
+      "treatBlankAsUndeclaredWriteIn": false,
+      "overvoteLabel": "",
+      "undervoteLabel": "",
+      "undeclaredWriteInLabel": "",
+      "idColumnIndex" : "A",
+      "firstVoteColumnIndex" : "F"
+    }
+  ],
+  "candidates": [
+    {
+      "name": "Option 1"
+    },
+    {
+      "name": "Option 2"
+    },
+    {
+      "name": "Option 3"
+    }],
+  "rules" : {
+    "tiebreakMode": "useCandidateOrder",
+    "overvoteRule": "exhaustImmediately",
+    "winnerElectionMode": "singleWinnerMajority",
+    "numberOfWinners": "1",
+    "maxSkippedRanksAllowed": "1",
+    "maxRankingsAllowed": "8",
+    "rulesDescription" : "Simple"
+  }
+}

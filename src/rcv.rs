@@ -20,24 +20,33 @@ pub mod io_cdf;
 pub mod io_common;
 pub mod io_dominion;
 pub mod io_ess;
+mod io_msforms;
 
 #[derive(Debug, Snafu)]
 pub enum RcvError {
+    // General
     #[snafu(display(""))]
     OpeningFile {
         source: Box<RcvError>,
         root_path: String,
     },
+    #[snafu(display(""))]
+    UnknownFormat { format: String },
+
+    // Excel
     #[snafu(display("Error opening file {path}"))]
     OpeningExcel {
         source: calamine::XlsxError,
         path: String,
     },
-
     #[snafu(display(""))]
     EmptyExcel {},
     #[snafu(display(""))]
     ExcelWrongCellType { lineno: u64, content: String },
+    #[snafu(display(""))]
+    ExcelCannotFindCandidateInHeader { candidate_name: String },
+
+    // Format issues
     #[snafu(display(""))]
     CdfParsingJson {},
     #[snafu(display(""))]
@@ -53,6 +62,9 @@ pub enum RcvError {
     },
     #[snafu(display(""))]
     ParsingJson { source: serde_json::Error },
+
+    #[snafu(display(""))]
+    MissingChoices {},
 
     #[snafu(display(""))]
     ParsingJsonNumber {},
@@ -187,6 +199,11 @@ pub mod config_reader {
         pub undeclared_write_in_label: Option<String>,
         #[serde(rename = "treatBlankAsUndeclaredWriteIn")]
         pub treat_blank_as_undeclared_write_in: Option<bool>,
+        // New options specific to timrcv
+        #[serde(rename = "excelWorksheetName")]
+        pub excel_worksheet_name: Option<String>,
+        #[serde(rename = "choices")]
+        pub choices: Option<Vec<String>>,
     }
 
     impl FileSource {
@@ -314,6 +331,13 @@ pub mod config_reader {
                 .as_u64()
                 .map(|x| x as usize)
                 .context(ParsingJsonNumberSnafu {}),
+            // Parsing the Excel-style columns
+            Some(JSValue::String(s)) if s.chars().all(|c| c.is_alphabetic()) => {
+                // Just treating the simple case for now. It should be expanded to more than 26 columns.
+                assert_eq!(s.chars().count(), 1);
+                let c1: char = s.to_lowercase().chars().next().unwrap();
+                Ok((c1 as usize) - ('a' as usize))
+            }
             Some(JSValue::String(s)) => s.parse::<usize>().ok().context(ParsingJsonNumberSnafu {}),
             _ => None.context(ParsingJsonNumberSnafu {}),
         }
@@ -340,11 +364,21 @@ fn read_ranking_data(
     let p: PathBuf = [root_path.clone(), cfs.file_path.clone()].iter().collect();
     let p2 = p.as_path().display().to_string();
     info!("Attempting to read rank file {:?}", p2);
+    let cand_names: Vec<String> = candidates.iter().map(|c| c.name.clone()).collect();
     let parsed_ballots = match cfs.provider.as_str() {
         "ess" => io_ess::read_excel_file(p2, cfs).context(OpeningFileSnafu { root_path })?,
         "cdf" => io_cdf::read_json(p2).context(OpeningFileSnafu { root_path })?,
         "dominion" => io_dominion::read_dominion(&p2).context(OpeningFileSnafu { root_path })?,
-        x => unimplemented!("Provider not implemented {:?}", x),
+        "msforms_ranking" => {
+            io_msforms::read_msforms_ranking(p2, cfs).context(OpeningFileSnafu { root_path })?
+        }
+        "msforms_likert" => io_msforms::read_msforms_likert(p2, cfs, &cand_names)
+            .context(OpeningFileSnafu { root_path })?,
+        x => {
+            return Err(RcvError::UnknownFormat {
+                format: x.to_string(),
+            })
+        }
     };
     validate_ballots(&parsed_ballots, candidates, cfs, rules)
 }
@@ -608,10 +642,14 @@ pub fn run_election(
     Ok(())
 }
 
-fn run_election_test(test_name: &str, config_lpath: &str, summary_lpath: &str) {
-    let test_dir = option_env!("RCV_TEST_DIR").unwrap_or(
+fn run_election_test(test_name: &str, config_lpath: &str, summary_lpath: &str, is_local: bool) {
+    let test_dir = if is_local {
+        "./tests"
+    } else {
+        option_env!("RCV_TEST_DIR").unwrap_or(
         "/home/tjhunter/work/elections/rcv/src/test/resources/network/brightspots/rcv/test_data",
-    );
+    )
+    };
     info!("Running test {}", test_name);
     let res = run_election(
         format!("{}/{}/{}", test_dir, test_name, config_lpath),
@@ -636,19 +674,29 @@ pub fn test_wrapper(test_name: &str) {
         test_name,
         format!("{}_config.json", test_name).as_str(),
         format!("{}_expected_summary.json", test_name).as_str(),
+        false,
     )
 }
 
-// TODO p0 https://github.com/commure/datatest/tree/main/tests
+pub fn test_wrapper_local(test_name: &str) {
+    run_election_test(
+        test_name,
+        format!("{}_config.json", test_name).as_str(),
+        format!("{}_expected_summary.json", test_name).as_str(),
+        true,
+    )
+}
+
 #[cfg(test)]
 mod tests {
 
     use super::test_wrapper;
+    use super::test_wrapper_local;
 
-    #[test]
-    fn _2013_minneapolis_mayor() {
-        test_wrapper("2013_minneapolis_mayor");
-    }
+    // #[test]
+    // fn _2013_minneapolis_mayor() {
+    //     test_wrapper("2013_minneapolis_mayor");
+    // }
 
     // Takes about 100s to complete on github actions, disabled for the time being.
     #[test]
@@ -961,5 +1009,12 @@ mod tests {
     #[test]
     fn uwi_cannot_win_test() {
         test_wrapper("uwi_cannot_win_test");
+    }
+
+    // ********** Tests specific to timrcv *************
+
+    #[test]
+    fn msforms_1() {
+        test_wrapper_local("msforms_1");
     }
 }

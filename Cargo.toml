@@ -27,10 +27,10 @@ calamine = "0.18"
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-# anyhow = "1.0"
 text-diff = "0.4"
 clap = { version = "3.2.20", features = ["derive"] }
 snafu = "0.7"
+csv = "1.1"
 
 # dev
 # datatest = "0.7.1" #would be nice but is not in rust stable yet

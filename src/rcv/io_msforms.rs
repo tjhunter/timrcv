@@ -1,0 +1,178 @@
+use calamine::DataType;
+use std::collections::HashMap;
+
+use crate::rcv::{
+    io_common::{assemble_choices, simplify_file_name},
+    *,
+};
+
+pub fn read_msforms_ranking(path: String, cfs: &FileSource) -> BRcvResult<Vec<ParsedBallot>> {
+    // The filename to add as a ballot id
+    let simplified_file_name = simplify_file_name(path.as_str());
+
+    let wrange = get_range(&path, cfs)?;
+
+    let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
+    debug!("read_excel_file: header: {:?}", header);
+    let start_range = cfs.first_vote_column_index()? + 1;
+    debug!("read_excel_file: start_range: {:?}", start_range);
+
+    let mut iter = wrange.rows();
+    // TODO check for correctness
+    // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
+    iter.next();
+    let mut res: Vec<ParsedBallot> = Vec::new();
+    for (idx, row) in iter.enumerate() {
+        debug!(
+            "read_excel_file: idx: {:?} row: {:?}",
+            idx,
+            &row.get(start_range)
+        );
+
+        // Hardcode the parsing of the row for now. The CSV crate does not help as
+        // much as anticipated in these situations.
+
+        let choices_s = row.get(start_range).context(EmptyExcelSnafu {})?;
+        let choices_parsed: Vec<Vec<String>> = match choices_s {
+            calamine::DataType::String(s) => s.split(';').map(|s| vec![s.to_string()]).collect(),
+            _ => {
+                return Err(Box::new(RcvError::ExcelWrongCellType {
+                    lineno: idx as u64,
+                    content: format!("{:?}", row),
+                }));
+            }
+        };
+
+        debug!("read_excel_file: idx: {:?} row: {:?}", idx, &choices_parsed);
+
+        let pb = ParsedBallot {
+            id: Some(format!("{}-{:08}", simplified_file_name, idx)),
+            // MS forms are not expected to handle weights for the time being.
+            count: Some(1),
+            choices: choices_parsed,
+        };
+        res.push(pb);
+    }
+    Ok(res)
+}
+
+pub fn read_msforms_likert(
+    path: String,
+    cfs: &FileSource,
+    candidate_names: &[String],
+) -> BRcvResult<Vec<ParsedBallot>> {
+    // The filename to add as a ballot id
+    let simplified_file_name = simplify_file_name(path.as_str());
+
+    let wrange = get_range(&path, cfs)?;
+
+    let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
+    debug!("read_msforms_likert: header: {:?}", header);
+
+    // Find the mapping between the columns and the candidate names.
+    // Every candidate should have its name associated to a column
+    let col_names: HashMap<String, usize> = header
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, x)| match x {
+            calamine::DataType::String(s) => Some((s.clone(), idx)),
+            _ => None,
+        })
+        .collect();
+
+    debug!("read_msforms_likert: col_names: {:?}", col_names);
+
+    let mut col_indexes: Vec<(usize, String)> = Vec::new();
+    for cname in candidate_names {
+        let idx = col_names
+            .get(cname)
+            .context(ExcelCannotFindCandidateInHeaderSnafu {
+                candidate_name: cname,
+            })?;
+        col_indexes.push((*idx, cname.clone()));
+    }
+
+    debug!("read_msforms_likert: col_indexes: {:?}", col_indexes);
+
+    let ranked_choices: HashMap<String, u32> = cfs
+        .choices
+        .clone()
+        .context(MissingChoicesSnafu {})?
+        .iter()
+        .enumerate()
+        // The ranks start at 1
+        .map(|(idx, s)| (s.clone(), (idx + 1) as u32))
+        .collect();
+
+    debug!("read_msforms_likert: ranked_choices: {:?}", ranked_choices);
+
+    let mut iter = wrange.rows();
+    // TODO check for correctness
+    // Not looking at configuration for now: dropping the first column (id) and assuming that the last column is the weight.
+    iter.next();
+    let mut res: Vec<ParsedBallot> = Vec::new();
+    for (idx, row) in iter.enumerate() {
+        debug!("read_msforms_likert: idx: {:?} row: {:?}", idx, &row);
+
+        let mut choices: Vec<(String, u32)> = Vec::new();
+
+        for (idx, cand_name) in col_indexes.iter() {
+            let v: calamine::DataType = row.get(*idx).cloned().context(EmptyExcelSnafu {})?;
+            match v {
+                calamine::DataType::String(s) => {
+                    let choice_index = ranked_choices
+                        .get(&s)
+                        .cloned()
+                        .context(EmptyExcelSnafu {})?;
+                    choices.push((cand_name.clone(), choice_index as u32));
+                }
+                calamine::DataType::Empty => {
+                    // No choice made, skip.
+                }
+                _ => {
+                    return Err(Box::new(RcvError::ExcelWrongCellType {
+                        lineno: *idx as u64,
+                        content: format!("{:?} IN {:?}", v, row),
+                    }));
+                }
+            };
+        }
+
+        debug!(
+            "read_msforms_likert: idx: {:?} choices: {:?} row: {:?}",
+            idx, &choices, &row
+        );
+
+        let choices_parsed = assemble_choices(&choices);
+
+        let pb = ParsedBallot {
+            id: Some(format!("{}-{:08}", simplified_file_name, idx)),
+            // MS forms are not expected to handle weights for the time being.
+            count: Some(1),
+            choices: choices_parsed,
+        };
+        res.push(pb);
+    }
+    Ok(res)
+}
+
+fn get_range(path: &String, cfs: &FileSource) -> BRcvResult<calamine::Range<DataType>> {
+    let worksheet_name = cfs
+        .excel_worksheet_name
+        .clone()
+        .unwrap_or_else(|| "Form1".to_string());
+    debug!(
+        "read_excel_file: path: {:?} worksheet: {:?}",
+        &path, &worksheet_name
+    );
+    let p = path.clone();
+    let mut workbook: Xlsx<_> =
+        open_workbook(p).context(OpeningExcelSnafu { path: path.clone() })?;
+
+    let wrange = workbook
+        .worksheet_range(&worksheet_name)
+        .context(EmptyExcelSnafu {})?
+        .context(OpeningExcelSnafu { path: path.clone() })?;
+
+    Ok(wrange)
+}
