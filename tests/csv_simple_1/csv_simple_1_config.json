@@ -1,0 +1,47 @@
+{
+  "tabulatorVersion": "TEST",
+  "outputSettings": {
+    "contestName": "CSV 1",
+    "outputDirectory": "output",
+    "contestDate": "2020-07-19",
+    "contestJurisdiction": "jurisdiction",
+    "contestOffice": "office"
+  },
+  "cvrFileSources": [
+    {
+      "filePath": "example.csv",
+      "provider": "csv",
+      "treatBlankAsUndeclaredWriteIn": false,
+      "overvoteLabel": "",
+      "undervoteLabel": "",
+      "undeclaredWriteInLabel": "",
+      "firstVoteRowIndex": "1",
+      "countColumnIndex": "2",
+      "idColumnIndex" : "1",
+      "firstVoteColumnIndex" : "3"
+    }
+  ],
+  "candidates": [
+    {
+      "name": "A"
+    },
+    {
+      "name": "B"
+    },
+    {
+      "name": "C"
+    },
+    {
+      "name": "D"
+    }
+    ],
+  "rules" : {
+    "tiebreakMode": "useCandidateOrder",
+    "overvoteRule": "exhaustImmediately",
+    "winnerElectionMode": "singleWinnerMajority",
+    "numberOfWinners": "1",
+    "maxSkippedRanksAllowed": "1",
+    "maxRankingsAllowed": "8",
+    "rulesDescription" : "Simple"
+  }
+}

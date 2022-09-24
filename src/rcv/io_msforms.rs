@@ -71,7 +71,7 @@ pub fn read_msforms_likert(
 
     // Find the mapping between the columns and the candidate names.
     // Every candidate should have its name associated to a column
-    let col_indexes = get_col_index(&candidate_names, &header)?;
+    let col_indexes = get_col_index(candidate_names, header)?;
 
     debug!("read_msforms_likert: col_indexes: {:?}", col_indexes);
 
@@ -132,7 +132,6 @@ pub fn read_msforms_likert(
 pub fn read_msforms_likert_transpose(
     path: String,
     cfs: &FileSource,
-    candidate_names: &[String],
 ) -> BRcvResult<Vec<ParsedBallot>> {
     // The filename to add as a ballot id
     let simplified_file_name = simplify_file_name(path.as_str());
@@ -152,7 +151,7 @@ pub fn read_msforms_likert_transpose(
 
     // Find the mapping between the columns and the candidate names.
     // Every candidate should have its name associated to a column
-    let col_indexes = get_col_index_choices(&choice_names, &header)?;
+    let col_indexes = get_col_index_choices(&choice_names, header)?;
 
     debug!(
         "read_msforms_likert_transpose: col_indexes: {:?}",
