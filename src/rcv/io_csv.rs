@@ -1,17 +1,15 @@
 // Primitives for reading CSV files.
 
-use std::collections::HashMap;
+// use std::collections::HashMap;
 use std::fs::File;
 
-use csv::Reader;
+// use csv::Reader;
 
-use crate::rcv::{
-    io_common::{assemble_choices, simplify_file_name},
-    *,
-};
+use crate::rcv::io_common::make_default_id_lineno;
+use crate::rcv::*;
 
 pub fn read_csv_ranking(path: String, cfs: &FileSource) -> BRcvResult<Vec<ParsedBallot>> {
-    let default_id = make_default_id(&path);
+    let default_id = make_default_id_lineno(&path);
 
     let id_idx_o = cfs.id_column_index_int()?;
     debug!("2");
@@ -81,9 +79,4 @@ fn get_records(
         _ = records.next();
     }
     Ok((records, first_row))
-}
-
-fn make_default_id(path: &String) -> impl Fn(usize) -> String {
-    let simplified_file_name = simplify_file_name(path.as_str());
-    move |lineno| format!("{}-{:08}", simplified_file_name, lineno)
 }

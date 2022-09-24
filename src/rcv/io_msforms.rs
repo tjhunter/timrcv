@@ -2,13 +2,12 @@ use calamine::DataType;
 use std::collections::HashMap;
 
 use crate::rcv::{
-    io_common::{assemble_choices, simplify_file_name},
+    io_common::{assemble_choices, make_default_id_lineno},
     *,
 };
 
 pub fn read_msforms_ranking(path: String, cfs: &FileSource) -> BRcvResult<Vec<ParsedBallot>> {
-    // The filename to add as a ballot id
-    let simplified_file_name = simplify_file_name(path.as_str());
+    let default_id = make_default_id_lineno(&path);
 
     let wrange = get_range(&path, cfs)?;
 
@@ -46,7 +45,7 @@ pub fn read_msforms_ranking(path: String, cfs: &FileSource) -> BRcvResult<Vec<Pa
         debug!("read_excel_file: idx: {:?} row: {:?}", idx, &choices_parsed);
 
         let pb = ParsedBallot {
-            id: Some(format!("{}-{:08}", simplified_file_name, idx)),
+            id: Some(default_id(idx)),
             // MS forms are not expected to handle weights for the time being.
             count: Some(1),
             choices: choices_parsed,
@@ -61,8 +60,7 @@ pub fn read_msforms_likert(
     cfs: &FileSource,
     candidate_names: &[String],
 ) -> BRcvResult<Vec<ParsedBallot>> {
-    // The filename to add as a ballot id
-    let simplified_file_name = simplify_file_name(path.as_str());
+    let default_id = make_default_id_lineno(&path);
 
     let wrange = get_range(&path, cfs)?;
 
@@ -119,7 +117,7 @@ pub fn read_msforms_likert(
         let choices_parsed = assemble_choices(&choices);
 
         let pb = ParsedBallot {
-            id: Some(format!("{}-{:08}", simplified_file_name, idx)),
+            id: Some(default_id(idx)),
             // MS forms are not expected to handle weights for the time being.
             count: Some(1),
             choices: choices_parsed,
@@ -133,9 +131,7 @@ pub fn read_msforms_likert_transpose(
     path: String,
     cfs: &FileSource,
 ) -> BRcvResult<Vec<ParsedBallot>> {
-    // The filename to add as a ballot id
-    let simplified_file_name = simplify_file_name(path.as_str());
-
+    let default_id = make_default_id_lineno(&path);
     let wrange = get_range(&path, cfs)?;
 
     let header = wrange.rows().next().context(EmptyExcelSnafu {})?;
@@ -194,7 +190,7 @@ pub fn read_msforms_likert_transpose(
         let choices_parsed = assemble_choices(&choices);
 
         let pb = ParsedBallot {
-            id: Some(format!("{}-{:08}", simplified_file_name, idx)),
+            id: Some(default_id(idx)),
             // MS forms are not expected to handle weights for the time being.
             count: Some(1),
             choices: choices_parsed,
