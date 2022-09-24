@@ -845,4 +845,9 @@ mod tests {
     fn csv_simple_1() {
         test_wrapper_local("csv_simple_1");
     }
+
+    #[test]
+    fn csv_simple_2() {
+        test_wrapper_local("csv_simple_2");
+    }
 }

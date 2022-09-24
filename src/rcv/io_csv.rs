@@ -14,8 +14,10 @@ pub fn read_csv_ranking(path: String, cfs: &FileSource) -> BRcvResult<Vec<Parsed
     let default_id = make_default_id(&path);
 
     let id_idx_o = cfs.id_column_index_int()?;
+    debug!("2");
     let choices_start_col = cfs.first_vote_column_index()?;
     let count_idx_o = cfs.count_column_index_int()?;
+    debug!("");
 
     let mut res: Vec<ParsedBallot> = Vec::new();
     let (records, row_offset) = get_records(&path, cfs)?;

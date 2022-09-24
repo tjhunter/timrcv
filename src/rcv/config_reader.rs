@@ -66,27 +66,35 @@ pub struct FileSource {
 
 impl FileSource {
     pub fn first_vote_column_index(&self) -> RcvResult<usize> {
-        let x = read_js_int(&self._first_vote_column_index)?;
-        Ok(x - 1)
+        if self._first_vote_column_index.is_some() {
+            let x = read_js_int(&self._first_vote_column_index)?;
+            Ok(x - 1)
+        } else {
+            Ok(0)
+        }
     }
 
     pub fn first_vote_row_index(&self) -> RcvResult<usize> {
-        let x = read_js_int(&self._first_vote_row_index)?;
-        Ok(x - 1)
+        if self._first_vote_row_index.is_some() {
+            let x = read_js_int(&self._first_vote_row_index)?;
+            Ok(x - 1)
+        } else {
+            Ok(0)
+        }
     }
 
     pub fn id_column_index_int(&self) -> RcvResult<Option<usize>> {
         if self.id_column_index.is_some() {
             read_js_int(&self.id_column_index).map(Some)
         } else {
-            Err(RcvError::ParsingJsonNumber {})
+            Ok(None)
         }
     }
     pub fn count_column_index_int(&self) -> RcvResult<Option<usize>> {
         if self.count_column_index.is_some() {
             read_js_int(&self.count_column_index).map(Some)
         } else {
-            Err(RcvError::ParsingJsonNumber {})
+            Ok(None)
         }
     }
 }
