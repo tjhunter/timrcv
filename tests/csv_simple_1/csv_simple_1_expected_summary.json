@@ -1,0 +1,57 @@
+{
+  "config": {
+    "contest": "CSV 1",
+    "date": "2020-07-19",
+    "jurisdiction": "jurisdiction",
+    "office": "office",
+    "threshold": "51"
+  },
+  "results": [
+    {
+      "round": 1,
+      "tally": {
+        "A": "40",
+        "B": "30",
+        "C": "20",
+        "D": "10"
+      },
+      "tallyResults": [
+        {
+          "eliminated": "D",
+          "transfers": {
+            "B": "10"
+          }
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "tally": {
+        "A": "40",
+        "B": "40",
+        "C": "20"
+      },
+      "tallyResults": [
+        {
+          "eliminated": "C",
+          "transfers": {
+            "A": "20"
+          }
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "tally": {
+        "A": "60",
+        "B": "40"
+      },
+      "tallyResults": [
+        {
+          "elected": "A",
+          "transfers": {}
+        }
+      ]
+    }
+  ]
+}

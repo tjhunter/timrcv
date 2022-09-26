@@ -4,7 +4,7 @@ use crate::rcv::io_common::{assemble_choices, get_count};
 use crate::rcv::*;
 use std::collections::HashMap;
 
-use crate::rcv::io_common::simplify_file_name;
+use crate::rcv::io_common::make_default_id_str;
 
 pub fn read_json(path: String) -> BRcvResult<Vec<ParsedBallot>> {
     let contents =
@@ -13,8 +13,7 @@ pub fn read_json(path: String) -> BRcvResult<Vec<ParsedBallot>> {
     let cvrr: CastVoteRecordReport =
         serde_json::from_str(contents.as_str()).context(ParsingJsonSnafu {})?;
 
-    // The filename to add as a ballot id
-    let simplified_file_name = simplify_file_name(path.as_str());
+    let default_id = make_default_id_str(&path);
 
     // Mapping from id to candidate name
     let mut candidateids_mapping: HashMap<String, String> = HashMap::new();
@@ -54,8 +53,9 @@ pub fn read_json(path: String) -> BRcvResult<Vec<ParsedBallot>> {
                         ranks.push((candidate_name.clone(), pos.rank))
                     }
                 }
+                let id = default_id(&cvr.ballot_id);
                 let b = ParsedBallot {
-                    id: Some(format!("{}_{}", simplified_file_name, cvr.ballot_id)),
+                    id: Some(id),
                     count: get_count(&num_votes),
                     choices: assemble_choices(&ranks),
                 };

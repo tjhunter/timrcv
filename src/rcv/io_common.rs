@@ -1,6 +1,6 @@
 use std::path::Path;
 
-pub fn simplify_file_name(path: &str) -> String {
+fn simplify_file_name(path: &str) -> String {
     Path::new(path)
         .file_name()
         .unwrap()
@@ -27,4 +27,14 @@ pub fn assemble_choices(ranks: &[(String, u32)]) -> Vec<Vec<String>> {
 pub fn get_count(num_votes: &[u64]) -> Option<u64> {
     // TODO: check that all the votes have the same weight
     num_votes.first().cloned()
+}
+
+pub fn make_default_id_lineno(path: &str) -> impl Fn(usize) -> String {
+    let simplified_file_name = simplify_file_name(path);
+    move |lineno| format!("{}-{:08}", simplified_file_name, lineno)
+}
+
+pub fn make_default_id_str(path: &str) -> impl Fn(&str) -> String {
+    let simplified_file_name = simplify_file_name(path);
+    move |ballot_id| format!("{}-{:08}", simplified_file_name, ballot_id)
 }

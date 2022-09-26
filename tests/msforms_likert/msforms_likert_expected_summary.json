@@ -1,0 +1,27 @@
+{
+  "config": {
+    "contest": "MS Forms 1",
+    "date": "2020-07-19",
+    "jurisdiction": "Kansas",
+    "office": "test 1",
+    "threshold": "1"
+  },
+  "results": [
+    {
+      "round": 1,
+      "tally": {
+        "candidate 2-1": "0",
+        "candidate 2-2": "0",
+        "candidate 2-3": "0",
+        "candidate 2-4": "1",
+        "candidate 2-5": "0"
+      },
+      "tallyResults": [
+        {
+          "elected": "candidate 2-4",
+          "transfers": {}
+        }
+      ]
+    }
+  ]
+}
