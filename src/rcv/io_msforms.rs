@@ -200,19 +200,16 @@ pub fn read_msforms_likert_transpose(
     Ok(res)
 }
 
-fn get_col_index(
+/// Given the header of a file (names of each of the columns), and the names of the candidates,
+/// finds the mapping from each candidate to a column index position.
+pub fn get_col_index_mapping(
     req_col_names: &[String],
-    header: &[DataType],
+    header: &[Option<String>],
 ) -> BRcvResult<Vec<(usize, String)>> {
-    // Find the mapping between the columns and the candidate names.
-    // Every candidate should have its name associated to a column
     let col_names: HashMap<String, usize> = header
         .iter()
         .enumerate()
-        .filter_map(|(idx, x)| match x {
-            calamine::DataType::String(s) => Some((s.clone(), idx)),
-            _ => None,
-        })
+        .filter_map(|(idx, x)| x.as_ref().map(|s| (s.clone(), idx)))
         .collect();
 
     debug!("read_msforms_likert: col_names: {:?}", col_names);
@@ -227,6 +224,20 @@ fn get_col_index(
         col_indexes.push((*idx, cname.clone()));
     }
     Ok(col_indexes)
+}
+
+fn get_col_index(
+    req_col_names: &[String],
+    header: &[DataType],
+) -> BRcvResult<Vec<(usize, String)>> {
+    let remapped: Vec<Option<String>> = header
+        .iter()
+        .map(|dt| match dt {
+            calamine::DataType::String(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    get_col_index_mapping(req_col_names, &remapped)
 }
 
 // Maps a column index to a rank

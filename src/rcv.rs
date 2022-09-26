@@ -34,6 +34,8 @@ pub enum RcvError {
     },
     #[snafu(display(""))]
     UnknownFormat { format: String },
+    #[snafu(display(""))]
+    LineParse { lineno: usize, col: usize },
 
     // Excel
     #[snafu(display("Error opening file {path}"))]
@@ -55,6 +57,8 @@ pub enum RcvError {
     CsvLineParse { source: csv::Error },
     #[snafu(display(""))]
     CsvLineToShort { lineno: usize },
+    #[snafu(display(""))]
+    CsvEmpty {},
 
     // Format issues
     #[snafu(display(""))]
@@ -187,6 +191,9 @@ fn read_ranking_data(
         "msforms_likert_transpose" => io_msforms::read_msforms_likert_transpose(p2, cfs)
             .context(OpeningFileSnafu { root_path })?,
         "csv" => io_csv::read_csv_ranking(p2, cfs).context(OpeningFileSnafu { root_path })?,
+        "csv_likert" => {
+            io_csv::read_csv_likert(p2, cfs, &cand_names).context(OpeningFileSnafu { root_path })?
+        }
         x => {
             return Err(RcvError::UnknownFormat {
                 format: x.to_string(),
@@ -849,5 +856,10 @@ mod tests {
     #[test]
     fn csv_simple_2() {
         test_wrapper_local("csv_simple_2");
+    }
+
+    #[test]
+    fn csv_simple_likert() {
+        test_wrapper_local("csv_simple_likert");
     }
 }
