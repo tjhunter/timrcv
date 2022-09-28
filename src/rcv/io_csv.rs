@@ -28,7 +28,13 @@ pub fn read_csv_ranking(path: String, cfs: &FileSource) -> BRcvResult<Vec<Parsed
         let choices_parsed: Vec<Vec<String>> = line
             .iter()
             .skip(choices_start_col)
-            .map(|s| vec![s.to_string()])
+            .map(|s| {
+                if s.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![s.to_string()]
+                }
+            })
             .collect();
         debug!(
             "read_csv_ranking: lineno: {:?} row: {:?}",

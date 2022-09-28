@@ -57,6 +57,7 @@ jobs:
           override: true
 
       - name: Build for Windows
+        shell: bash
         run: |
           staging="timrcv-windows"
           mkdir -p "$staging"

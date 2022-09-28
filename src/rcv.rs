@@ -33,9 +33,13 @@ pub enum RcvError {
         root_path: String,
     },
     #[snafu(display(""))]
+    MissingInput {},
+    #[snafu(display(""))]
     UnknownFormat { format: String },
     #[snafu(display(""))]
     LineParse { lineno: usize, col: usize },
+    #[snafu(display(""))]
+    MissingMandatoryCandidates {},
 
     // Excel
     #[snafu(display("Error opening file {path}"))]
@@ -172,13 +176,17 @@ pub struct ParsedBallot {
 fn read_ranking_data(
     root_path: String,
     cfs: &FileSource,
-    candidates: &[RcvCandidate],
+    candidates_o: Option<&Vec<RcvCandidate>>,
     rules: &RcvRules,
-) -> RcvResult<Vec<ranked_voting::Vote>> {
+) -> RcvResult<(Vec<ranked_voting::Vote>, Vec<RcvCandidate>)> {
     let p: PathBuf = [root_path.clone(), cfs.file_path.clone()].iter().collect();
     let p2 = p.as_path().display().to_string();
     info!("Attempting to read rank file {:?}", p2);
-    let cand_names: Vec<String> = candidates.iter().map(|c| c.name.clone()).collect();
+    let cand_names = || {
+        let candidates = candidates_o.context(MissingMandatoryCandidatesSnafu {})?;
+        let names: Vec<String> = candidates.iter().map(|c| c.name.clone()).collect();
+        Ok(names)
+    };
     let parsed_ballots = match cfs.provider.as_str() {
         "ess" => io_ess::read_excel_file(p2, cfs).context(OpeningFileSnafu { root_path })?,
         "cdf" => io_cdf::read_json(p2).context(OpeningFileSnafu { root_path })?,
@@ -186,21 +194,46 @@ fn read_ranking_data(
         "msforms_ranking" => {
             io_msforms::read_msforms_ranking(p2, cfs).context(OpeningFileSnafu { root_path })?
         }
-        "msforms_likert" => io_msforms::read_msforms_likert(p2, cfs, &cand_names)
+        "msforms_likert" => io_msforms::read_msforms_likert(p2, cfs, &cand_names()?)
             .context(OpeningFileSnafu { root_path })?,
         "msforms_likert_transpose" => io_msforms::read_msforms_likert_transpose(p2, cfs)
             .context(OpeningFileSnafu { root_path })?,
         "csv" => io_csv::read_csv_ranking(p2, cfs).context(OpeningFileSnafu { root_path })?,
-        "csv_likert" => {
-            io_csv::read_csv_likert(p2, cfs, &cand_names).context(OpeningFileSnafu { root_path })?
-        }
+        "csv_likert" => io_csv::read_csv_likert(p2, cfs, &cand_names()?)
+            .context(OpeningFileSnafu { root_path })?,
         x => {
             return Err(RcvError::UnknownFormat {
                 format: x.to_string(),
             })
         }
     };
-    validate_ballots(&parsed_ballots, candidates, cfs, rules)
+    let validated_candidates: Vec<RcvCandidate> = if let Some(cs) = candidates_o {
+        assert!(!cs.is_empty(), "no candidate specified");
+        cs.to_vec()
+    } else {
+        let mut names: HashSet<String> = HashSet::new();
+        for b in parsed_ballots.iter() {
+            for group in b.choices.iter() {
+                for name in group.iter() {
+                    if !names.contains(name) {
+                        names.insert(name.clone());
+                    }
+                }
+            }
+        }
+        let mut cs: Vec<RcvCandidate> = names
+            .iter()
+            .map(|n| RcvCandidate {
+                name: n.clone(),
+                code: None,
+                excluded: Some(false),
+            })
+            .collect();
+        cs.sort_by_key(|c| c.name.clone());
+        cs
+    };
+    let ballots = validate_ballots(&parsed_ballots, &validated_candidates, cfs, rules)?;
+    Ok((ballots, validated_candidates))
 }
 
 fn validate_ballots(
@@ -360,17 +393,36 @@ fn build_summary_js(config: &RcvConfig, rv: &VotingResult) -> JSValue {
 
 // override_out_path: used in test mode to disregard any output to disk.
 pub fn run_election(
-    config_path: String,
+    config_path_o: Option<String>,
     check_summary_path: Option<String>,
+    in_path: Option<String>,
     out_path: Option<String>,
     override_out_path: bool,
 ) -> RcvResult<()> {
-    let config_p = Path::new(config_path.as_str());
-    debug!("Opening file {:?}", config_p);
-    let config_str = fs::read_to_string(config_path.clone()).context(ConfigOpeningJsonSnafu {})?;
-    let config: RcvConfig = serde_json::from_str(&config_str).context(ParsingJsonSnafu {})?;
-    let config2 = config.clone();
-    debug!("run_election: config: {:?}", config);
+    let config: RcvConfig = {
+        if let Some(config_path) = config_path_o.as_ref() {
+            let config_p = Path::new(config_path.as_str());
+            debug!("Opening file {:?}", config_p);
+            let config_str =
+                fs::read_to_string(config_path.clone()).context(ConfigOpeningJsonSnafu {})?;
+            serde_json::from_str(&config_str).context(ParsingJsonSnafu {})?
+        } else {
+            RcvConfig::config_from_args(&in_path)?
+        }
+    };
+
+    let current_dir = std::env::current_dir()
+        .ok()
+        .context(MissingParentDirSnafu {})?;
+    let root_path: &Path = {
+        if let Some(config_path) = config_path_o.as_ref() {
+            let config_p = Path::new(config_path.as_str());
+            config_p.parent().context(MissingParentDirSnafu {})?
+        } else {
+            current_dir.as_path()
+        }
+    };
+    debug!("run_election: config: {:?}", &config);
 
     // Validate the rules:
     let rules = validate_rules(&config.rules)?;
@@ -379,22 +431,33 @@ pub fn run_election(
         unimplemented!("no file sources detected");
     }
 
-    let root_p = config_p.parent().context(MissingParentDirSnafu {})?;
+    let config_candidates = if config_path_o.is_none() {
+        None
+    } else {
+        Some(&config.candidates)
+    };
+
+    let mut validated_candidates_o: Option<Vec<RcvCandidate>> = None;
     let mut data: Vec<Vote> = Vec::new();
-    for cfs in config.cvr_file_sources {
-        let mut file_data = read_ranking_data(
-            root_p.as_os_str().to_str().unwrap().to_string(),
-            &cfs,
-            &config.candidates,
+    for cfs in config.cvr_file_sources.iter() {
+        let (mut file_data, file_validated_candidates) = read_ranking_data(
+            root_path.as_os_str().to_str().unwrap().to_string(),
+            cfs,
+            config_candidates,
             &config.rules,
         )?;
         data.append(&mut file_data);
+        // TODO: there is a small chance that different files have different set of candidates.
+        // In this case though, it is much more preferable to provide the list of candidates.
+        // Not a high priority.
+        validated_candidates_o = Some(file_validated_candidates);
     }
 
     debug!("run_election:data: {:?} vote records", data.len());
+    assert!(validated_candidates_o.is_some());
 
-    let candidates: Vec<Candidate> = config
-        .candidates
+    let candidates: Vec<Candidate> = validated_candidates_o
+        .unwrap()
         .iter()
         .map(|c| Candidate {
             name: c.name.clone(),
@@ -416,7 +479,7 @@ pub fn run_election(
     };
 
     // Assemble the final json
-    let result_js = build_summary_js(&config2, &result);
+    let result_js = build_summary_js(&config, &result);
 
     let pretty_js_stats = serde_json::to_string_pretty(&result_js).context(ParsingJsonSnafu {})?;
     debug!("stats:{}", pretty_js_stats);
@@ -472,8 +535,9 @@ fn run_election_test(test_name: &str, config_lpath: &str, summary_lpath: &str, i
     };
     info!("Running test {}", test_name);
     let res = run_election(
-        format!("{}/{}/{}", test_dir, test_name, config_lpath),
+        Some(format!("{}/{}/{}", test_dir, test_name, config_lpath)),
         Some(format!("{}/{}/{}", test_dir, test_name, summary_lpath)),
+        None,
         None,
         true,
     );
