@@ -149,6 +149,54 @@ pub struct RcvConfig {
     pub rules: RcvRules,
 }
 
+impl RcvConfig {
+    pub fn config_from_args(input: &Option<String>) -> RcvResult<RcvConfig> {
+        // Only support simple CSV format for the time being.
+        let cvr_file_sources = vec![FileSource {
+            provider: "csv".to_string(),
+            file_path: input.clone().context(MissingInputSnafu {})?,
+            contest_id: None,
+            _first_vote_column_index: None,
+            _first_vote_row_index: None,
+            id_column_index: None,
+            precinct_column_index: None,
+            overvote_delimiter: None,
+            undervote_label: None,
+            overvote_label: None,
+            undeclared_write_in_label: None,
+            treat_blank_as_undeclared_write_in: None,
+            count_column_index: None,
+            choices: None,
+            excel_worksheet_name: None,
+        }];
+        let res = RcvConfig {
+            output_settings: OutputSettings {
+                contest_name: "unknown contest".to_string(),
+                output_directory: None,
+                contest_juridiction: None,
+                contest_date: None,
+                contest_office: None,
+                tabulate_by_precinct: None,
+                generate_cdf_json: None,
+            },
+            cvr_file_sources,
+            candidates: Vec::new(),
+            rules: RcvRules {
+                tiebreak_mode: "useCandidateOrder".to_string(),
+                _overvote_rule: "alwaysSkipToNextRank".to_string(),
+                winner_election_mode: "singleWinnerMajority".to_string(),
+                random_seed: None,
+                max_skipped_ranks_allowed: "100000".to_string(),
+                max_rankings_allowed: "max".to_string(),
+                batch_elimination: Some(true),
+                exhaust_on_duplicate_candidate: Some(false),
+                rules_description: Some("timrcv_defaultv1".to_string()),
+            },
+        };
+        Ok(res)
+    }
+}
+
 pub fn read_summary(path: String) -> BRcvResult<JSValue> {
     let contents = fs::read_to_string(path.clone()).context(OpeningJsonSnafu { path })?;
     // debug!("read content: {:?}", contents);

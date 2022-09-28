@@ -12,17 +12,23 @@ use env_logger::Env;
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// (file path, optional) The file containing the election data. (Only JSON election descriptions are currently supported)
+    /// For more information about the file format, read the documentation at https://github.com/tjhunter/timrcv#readme
     #[clap(short, long, value_parser)]
-    config: String,
+    config: Option<String>,
     /// (file path) A reference file containing the outcome of an election in JSON format. If provided, timrcv will
     /// check that the tabulated output matches the reference.
     #[clap(short, long, value_parser)]
     reference: Option<String>,
 
-    /// (file path) If specified, the summary of the election will be written in JSON format to the given
-    /// location. Setting this option overrides what may be specified with the --data option.
+    /// (file path, 'stdout' or empty) If specified, the summary of the election will be written in JSON format to the given
+    /// location. Setting this option overrides the path that may be specified with the --config option.
     #[clap(short, long, value_parser)]
     out: Option<String>,
+
+    /// (file path or empty) If specified, the summary of the election will be written in JSON format to the given
+    /// location. Setting this option overrides what may be specified with the --data option.
+    #[clap(short, long, value_parser)]
+    input: Option<String>,
 
     /// If passed as an argument, will turn on verbose logging to the standard output.
     #[clap(long, takes_value = false)]
@@ -46,5 +52,5 @@ fn main() -> RcvResult<()> {
     });
     let _ = env_logger::try_init_from_env(env);
 
-    run_election(args.config, args.reference, args.out, false).map(|_| ())
+    run_election(args.config, args.reference, args.input, args.out, false).map(|_| ())
 }
