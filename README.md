@@ -1,6 +1,8 @@
 # timrcv
 
-A battle-tested command line tool for ranked-choice voting algorithms, also known as alternative vote (UK), single transferable vote (Australia) and instant-runoff voting. `timrcv` quickly and simply calculates election results from recorded votes. It implements multiple variants of the instant-runoff algorithm (see [Configuration] section). It is fast and uses little resources, and it is available for Windows, MacOS and Linux (see [Download] section). It can read formats from all the popular sources (Microsoft Forms, Google Forms, Qualtrics, CSV) as well as all the commercial vendors (ES&S, Dominion, NIST CDF). `timrcv` exports results in a JSON file format that can be visualized with [RCVis](www.rcvis.com)
+A battle-tested command line tool for ranked-choice voting algorithms, also known as alternative vote (UK), single transferable vote (Australia) and instant-runoff voting.
+
+`timrcv` quickly and simply calculates election results from recorded votes. It implements multiple variants of the instant-runoff algorithm (see [Configuration](#configuration) section). It is fast and uses little resources, and it is available for Windows, MacOS and Linux (see [Download] section). It can read formats from all the popular sources (Microsoft Forms, Google Forms, Qualtrics, CSV) as well as all the commercial vendors (ES&S, Dominion, NIST CDF). `timrcv` exports results in a JSON file format that can be visualized with [RCVis](www.rcvis.com)
 
 If you want to use `timrcv`, look at the [Download] instructions and the [Quick start] to get started.
 
