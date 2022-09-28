@@ -1,4 +1,4 @@
-# timrcv
+# timrcv - ranked choice voting made easy and fast
 
 A battle-tested command line vote tabulator for ranked-choice voting algorithms, also known as alternative vote (UK), single transferable vote (Australia) and instant-runoff voting.
 
