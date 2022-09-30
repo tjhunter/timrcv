@@ -4,7 +4,7 @@ A battle-tested command line vote tabulator for ranked-choice voting algorithms,
 
 `timrcv` quickly and simply calculates election results from recorded votes. It implements multiple variants of the instant-runoff algorithm (see [Configuration](#configuration) section). It is fast, uses little resources, and it is available for Windows, MacOS and Linux (see [Download](#download) section). It can read voting data from all the popular sources (Microsoft Forms, Google Forms, Qualtrics, CSV) as well as all the commercial vendors (ES&S, Dominion, NIST CDF). `timrcv` produces results that can be quickly visualized in all sorts of formats with [RCVis](www.rcvis.com).
 
-If you want to use `timrcv`, look at the [Download] instructions and the [Quick start] to get started.
+If you want to use `timrcv`, look at the [Download](#download) instructions and the [Quick start](#quickstart) to get started.
 
 `timrcv` is a clean room reimplementation of [RCVTab](https://www.rcvresources.org/rctab) in the Rust programing language. It supports the same configuration files and inputs, with the advantage of being significantly faster (8x-50x observed speedups). *Please note that unlike RCVTab, timrcv has not been audited. Consider using RCVTab instead for official tabulation needs*.
 
