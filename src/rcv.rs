@@ -215,7 +215,7 @@ fn read_ranking_data(
         for b in parsed_ballots.iter() {
             for group in b.choices.iter() {
                 for name in group.iter() {
-                    if !names.contains(name) {
+                    if !names.contains(name) && !name.is_empty() {
                         names.insert(name.clone());
                     }
                 }

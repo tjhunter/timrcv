@@ -1,4 +1,6 @@
+pub mod builder;
 mod config;
+use builder::Builder;
 use log::{debug, info};
 
 use std::{
@@ -7,6 +9,7 @@ use std::{
     ops::{Add, AddAssign},
 };
 
+// pub use crate::builder::*;
 pub use crate::config::*;
 
 // **** Private structures ****
@@ -132,6 +135,60 @@ struct RoundResult {
     stats: RoundStatistics,
     // Winning vote threshold
     vote_threshold: VoteCount,
+}
+
+/// Runs an election, being given an election builder.
+pub fn run_single_winner(builder: &builder::Builder) -> Result<VotingResult, VotingErrors> {
+    run_voting_stats(&builder._votes, &builder._rules, &builder._candidates)
+}
+
+/// Runs an election (simple interface).
+///
+/// This is a convenience interface for cases that do not need more complex ballots.
+/// If you need to handle more complex ballots that have weights, identifiers, over- and undervotes,
+/// use the [`run_single_winner`] function instead.
+///
+/// Here is a short example of running an election:
+///
+/// ```
+/// use ranked_voting;
+/// use ranked_voting::VoteRules;
+/// # use ranked_voting::VotingErrors;
+/// # let _ = env_logger::try_init();
+///
+/// let results = ranked_voting::run_election1(&vec![
+///   vec!["Alice", "Bob", "Charlie"],
+///   vec!["Alice"],
+///   vec!["Bob","Alice", "Charlie"],
+/// ], &VoteRules::DEFAULT_RULES, &vec![])?;
+///
+/// assert_eq!(results.winners, Some(vec!["Alice".to_string()]));
+///
+/// # Ok::<(), VotingErrors>(())
+/// ```
+pub fn run_election1(
+    votes: &[Vec<&str>],
+    rules: &config::VoteRules,
+    candidates: &[&str],
+) -> Result<VotingResult, VotingErrors> {
+    let mut builder = Builder::new(rules)?;
+
+    if candidates.is_empty() {
+        // Take everyone from the election.
+        let mut cand_set: HashSet<String> = HashSet::new();
+        for ballot in votes.iter() {
+            for choice in ballot.iter() {
+                cand_set.insert(choice.to_string());
+            }
+        }
+        let cand_vec: Vec<String> = cand_set.iter().cloned().collect();
+        builder = builder.candidates(&cand_vec)?;
+    };
+    for choices in votes.iter() {
+        let cands: Vec<Vec<String>> = choices.iter().map(|c| vec![c.to_string()]).collect();
+        builder.add_vote(&cands, 1)?;
+    }
+    run_single_winner(&builder)
 }
 
 /// Runs the voting algorithm with the given rules for the given votes.

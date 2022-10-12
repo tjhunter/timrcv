@@ -5,9 +5,9 @@ edition = "2021"
 
 [dependencies]
 log = "0.4"
-#nanoserde = "0.1"
-# todo remove
-#itertools = "0.8"
 sha256="1.0"
 # TODO: use as fallback for the crypto mode
 java-rand = "0.2"
+
+[dev-dependencies]
+env_logger = "0.9"

@@ -7,12 +7,14 @@ use clap::Parser;
 
 use env_logger::Env;
 
+// https://github.com/tjhunter/timrcv#readme
+
 /// This is a ranked voting tabulation program.
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// (file path, optional) The file containing the election data. (Only JSON election descriptions are currently supported)
-    /// For more information about the file format, read the documentation at https://github.com/tjhunter/timrcv#readme
+    /// For more information about the file format, read the documentation at
     #[clap(short, long, value_parser)]
     config: Option<String>,
     /// (file path) A reference file containing the outcome of an election in JSON format. If provided, timrcv will
