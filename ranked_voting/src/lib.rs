@@ -1,4 +1,6 @@
+mod builder;
 mod config;
+pub use builder::Builder;
 use log::{debug, info};
 
 use std::{
@@ -134,6 +136,87 @@ struct RoundResult {
     vote_threshold: VoteCount,
 }
 
+/// Runs an election using the instant-runoff voting algorithm.
+///
+/// This interface is potentially faster and less memory intensive than [`run_election1`].
+/// It also allows fine-grained error control when validating each vote. If you want a simpler
+/// interface, consider using [`run_election1`].
+///
+/// Here is a short example of running an election:
+///
+/// ```
+/// use ranked_voting::VoteRules;
+/// use ranked_voting::Builder;
+/// # use ranked_voting::VotingErrors;
+/// # let _ = env_logger::try_init();
+///
+/// let mut builder = Builder::new(&VoteRules::default())?;
+/// // If candidates are known in advance:
+/// builder = builder.candidates(&["Alice".to_string(), "Bob".to_string(), "Charlie".to_string()])?;
+///
+/// builder.add_vote_simple(&["Alice".to_string(), "Bob".to_string(), "Charlie".to_string()])?;
+/// builder.add_vote_simple(&["Alice".to_string()])?;
+/// builder.add_vote_simple(&["Charlie".to_string(), "Bob".to_string()])?;
+///
+/// let results = ranked_voting::run_election(&builder)?;
+///
+/// assert_eq!(results.winners, Some(vec!["Alice".to_string()]));
+///
+/// # Ok::<(), VotingErrors>(())
+/// ```
+pub fn run_election(builder: &builder::Builder) -> Result<VotingResult, VotingErrors> {
+    run_voting_stats(&builder._votes, &builder._rules, &builder._candidates)
+}
+
+/// Runs an election (simple interface) using the instant-runoff voting algorithm.
+///
+/// This is a convenience interface for cases that do not need more complex ballots.
+/// If you need to handle more complex ballots that have weights, identifiers, over- and undervotes,
+/// use the [`run_election`] function instead.
+///
+/// All the candidates names encountered (except empty names) are considered valid candidates.
+///
+/// Here is a short example of running an election:
+///
+/// ```
+/// use ranked_voting::VoteRules;
+/// # use ranked_voting::VotingErrors;
+/// # let _ = env_logger::try_init();
+///
+/// let results = ranked_voting::run_election1(&vec![
+///   vec!["Alice", "Bob", "Charlie"],
+///   vec!["Alice"],
+///   vec!["Bob","Alice", "Charlie"],
+/// ], &VoteRules::default())?;
+///
+/// assert_eq!(results.winners, Some(vec!["Alice".to_string()]));
+///
+/// # Ok::<(), VotingErrors>(())
+/// ```
+pub fn run_election1(
+    votes: &[Vec<&str>],
+    rules: &config::VoteRules,
+) -> Result<VotingResult, VotingErrors> {
+    let mut builder = Builder::new(rules)?;
+
+    {
+        // Take everyone from the election as a valid candidate.
+        let mut cand_set: HashSet<String> = HashSet::new();
+        for ballot in votes.iter() {
+            for choice in ballot.iter() {
+                cand_set.insert(choice.to_string());
+            }
+        }
+        let cand_vec: Vec<String> = cand_set.iter().cloned().collect();
+        builder = builder.candidates(&cand_vec)?;
+    }
+    for choices in votes.iter() {
+        let cands: Vec<Vec<String>> = choices.iter().map(|c| vec![c.to_string()]).collect();
+        builder.add_vote(&cands, 1)?;
+    }
+    run_election(&builder)
+}
+
 /// Runs the voting algorithm with the given rules for the given votes.
 ///
 /// Arguments:
@@ -141,8 +224,8 @@ struct RoundResult {
 /// * `rules` the rules that govern this election
 /// * `candidates` the registered candidates for this election. If not provided, the
 /// candidates will be inferred from the votes.
-pub fn run_voting_stats(
-    coll: &Vec<Vote>,
+fn run_voting_stats(
+    coll: &Vec<Ballot>,
     rules: &config::VoteRules,
     candidates: &Option<Vec<config::Candidate>>,
 ) -> Result<VotingResult, VotingErrors> {
@@ -977,7 +1060,7 @@ struct CheckResult {
 
 // Candidates are returned in the same order.
 fn checks(
-    coll: &[Vote],
+    coll: &[Ballot],
     reg_candidates: &[config::Candidate],
     rules: &config::VoteRules,
 ) -> Result<CheckResult, VotingErrors> {

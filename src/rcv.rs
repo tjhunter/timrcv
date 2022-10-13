@@ -106,6 +106,9 @@ pub enum RcvError {
         path: String,
     },
 
+    #[snafu(display(""))]
+    RvVoting { source: VotingErrors },
+
     #[snafu(whatever, display("{message}"))]
     Whatever {
         message: String,
@@ -178,7 +181,7 @@ fn read_ranking_data(
     cfs: &FileSource,
     candidates_o: Option<&Vec<RcvCandidate>>,
     rules: &RcvRules,
-) -> RcvResult<(Vec<ranked_voting::Vote>, Vec<RcvCandidate>)> {
+) -> RcvResult<(Vec<ranked_voting::Ballot>, Vec<RcvCandidate>)> {
     let p: PathBuf = [root_path.clone(), cfs.file_path.clone()].iter().collect();
     let p2 = p.as_path().display().to_string();
     info!("Attempting to read rank file {:?}", p2);
@@ -215,7 +218,7 @@ fn read_ranking_data(
         for b in parsed_ballots.iter() {
             for group in b.choices.iter() {
                 for name in group.iter() {
-                    if !names.contains(name) {
+                    if !names.contains(name) && !name.is_empty() {
                         names.insert(name.clone());
                     }
                 }
@@ -241,9 +244,9 @@ fn validate_ballots(
     candidates: &[RcvCandidate],
     source: &FileSource,
     _rules: &RcvRules,
-) -> RcvResult<Vec<Vote>> {
+) -> RcvResult<Vec<Ballot>> {
     let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
-    let mut res: Vec<Vote> = Vec::new();
+    let mut res: Vec<Ballot> = Vec::new();
 
     let treat_blank_as_undeclared_write_in =
         source.treat_blank_as_undeclared_write_in.unwrap_or(false);
@@ -290,7 +293,7 @@ fn validate_ballots(
         let count = pb.count.unwrap_or(1);
 
         if count > 0 && !candidates.is_empty() {
-            let v = Vote {
+            let v = Ballot {
                 candidates: choices,
                 count,
             };
@@ -351,8 +354,8 @@ fn validate_rules(rcv_rules: &RcvRules) -> RcvResult<VoteRules> {
                 )
             }
         },
-        number_of_winners: 1,         // TODO: implement
-        minimum_vote_threshold: None, // TODO: implement
+        // number_of_winners: 1,         // TODO: implement
+        // minimum_vote_threshold: None, // TODO: implement
         max_rankings_allowed: match rcv_rules.max_rankings_allowed.parse::<u32>() {
             Err(_) if rcv_rules.max_rankings_allowed == "max" => None,
             Result::Ok(x) if x > 0 => Some(x),
@@ -438,7 +441,7 @@ pub fn run_election(
     };
 
     let mut validated_candidates_o: Option<Vec<RcvCandidate>> = None;
-    let mut data: Vec<Vote> = Vec::new();
+    let mut data: Vec<Ballot> = Vec::new();
     for cfs in config.cvr_file_sources.iter() {
         let (mut file_data, file_validated_candidates) = read_ranking_data(
             root_path.as_os_str().to_str().unwrap().to_string(),
@@ -456,27 +459,25 @@ pub fn run_election(
     debug!("run_election:data: {:?} vote records", data.len());
     assert!(validated_candidates_o.is_some());
 
-    let candidates: Vec<Candidate> = validated_candidates_o
-        .unwrap()
-        .iter()
-        .map(|c| Candidate {
-            name: c.name.clone(),
-            code: match c.code.clone() {
-                Some(x) if x.is_empty() => None,
-                x => x,
-            },
-            excluded: c.excluded.unwrap_or(false),
-        })
-        .collect();
+    let mut builder = ranked_voting::Builder::new(&rules).context(RvVotingSnafu {})?;
 
-    let res = run_voting_stats(&data, &rules, &Some(candidates));
-
-    let result = match res {
-        Result::Ok(x) => x,
-        Result::Err(x) => {
-            whatever!("Voting error: {:?}", x)
+    if let Some(cands) = validated_candidates_o {
+        let mut candidate_names: Vec<String> = Vec::new();
+        for c in cands {
+            if c.excluded != Some(true) {
+                candidate_names.push(c.name);
+            }
         }
-    };
+        builder = builder
+            .candidates(&candidate_names)
+            .context(RvVotingSnafu {})?;
+    }
+
+    for ballot in data {
+        builder.add_vote_2(&ballot).context(RvVotingSnafu {})?;
+    }
+
+    let result = ranked_voting::run_election(&builder).context(RvVotingSnafu {})?;
 
     // Assemble the final json
     let result_js = build_summary_js(&config, &result);

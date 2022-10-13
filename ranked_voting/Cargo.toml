@@ -1,13 +1,24 @@
 [package]
 name = "ranked_voting"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
+authors = ["Tim Hunter <tjhunter@cs.stanford.edu>"]
+license = "Apache-2.0"
+readme = "../README.md"
+repository = "https://github.com/tjhunter/timrcv"
+description = "Industrial-strength implementation of the instant-runoff voting algorithm (library and command line interface)"
+categories = ["science"]
+keywords = ["irv", "tally", "election", "voting", "vote", "ballot"]
+include = [
+    "**/*.rs",
+    "Cargo.toml",
+]
 
 [dependencies]
 log = "0.4"
-#nanoserde = "0.1"
-# todo remove
-#itertools = "0.8"
 sha256="1.0"
 # TODO: use as fallback for the crypto mode
-java-rand = "0.2"
+# java-rand = "0.2"
+
+[dev-dependencies]
+env_logger = "0.9"
