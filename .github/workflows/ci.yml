@@ -49,6 +49,11 @@ jobs:
           cargo check
           cargo test
 
+      - name: DocTest
+        run: |
+          cd ranked_voting
+          cargo test --docs
+
       - name: Build
         run: |
           cargo build --release
