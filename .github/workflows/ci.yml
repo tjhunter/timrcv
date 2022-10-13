@@ -52,7 +52,7 @@ jobs:
       - name: DocTest
         run: |
           cd ranked_voting
-          cargo test --docs
+          cargo test --doc
 
       - name: Build
         run: |

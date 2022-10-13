@@ -1,7 +1,15 @@
 [package]
 name = "ranked_voting"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
+authors = ["Tim Hunter <tjhunter@cs.stanford.edu>"]
+
+readme = "../README.md"
+repository = "https://github.com/tjhunter/timrcv"
+description = "Industrial-strength implementation of the instant-runoff voting algorithm (library and command line interface)"
+categories = ["science"]
+keywords = ["irv", "tally", "election", "voting", "vote", "ballot"]
+
 
 [dependencies]
 log = "0.4"
