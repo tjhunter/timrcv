@@ -106,6 +106,9 @@ pub enum RcvError {
         path: String,
     },
 
+    #[snafu(display(""))]
+    RvVoting { source: VotingErrors },
+
     #[snafu(whatever, display("{message}"))]
     Whatever {
         message: String,
@@ -456,27 +459,25 @@ pub fn run_election(
     debug!("run_election:data: {:?} vote records", data.len());
     assert!(validated_candidates_o.is_some());
 
-    let candidates: Vec<Candidate> = validated_candidates_o
-        .unwrap()
-        .iter()
-        .map(|c| Candidate {
-            name: c.name.clone(),
-            code: match c.code.clone() {
-                Some(x) if x.is_empty() => None,
-                x => x,
-            },
-            excluded: c.excluded.unwrap_or(false),
-        })
-        .collect();
+    let mut builder = ranked_voting::builder::Builder::new(&rules).context(RvVotingSnafu {})?;
 
-    let res = run_voting_stats(&data, &rules, &Some(candidates));
-
-    let result = match res {
-        Result::Ok(x) => x,
-        Result::Err(x) => {
-            whatever!("Voting error: {:?}", x)
+    if let Some(cands) = validated_candidates_o {
+        let mut candidate_names: Vec<String> = Vec::new();
+        for c in cands {
+            if c.excluded != Some(true) {
+                candidate_names.push(c.name);
+            }
         }
-    };
+        builder = builder
+            .candidates(&candidate_names)
+            .context(RvVotingSnafu {})?;
+    }
+
+    for ballot in data {
+        builder.add_vote_2(&ballot).context(RvVotingSnafu {})?;
+    }
+
+    let result = ranked_voting::run_single_winner(&builder).context(RvVotingSnafu {})?;
 
     // Assemble the final json
     let result_js = build_summary_js(&config, &result);

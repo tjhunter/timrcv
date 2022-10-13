@@ -142,7 +142,7 @@ pub fn run_single_winner(builder: &builder::Builder) -> Result<VotingResult, Vot
     run_voting_stats(&builder._votes, &builder._rules, &builder._candidates)
 }
 
-/// Runs an election (simple interface).
+/// Runs an election (simple interface) using the instant-runoff voting algorithm.
 ///
 /// This is a convenience interface for cases that do not need more complex ballots.
 /// If you need to handle more complex ballots that have weights, identifiers, over- and undervotes,
@@ -198,7 +198,7 @@ pub fn run_election1(
 /// * `rules` the rules that govern this election
 /// * `candidates` the registered candidates for this election. If not provided, the
 /// candidates will be inferred from the votes.
-pub fn run_voting_stats(
+fn run_voting_stats(
     coll: &Vec<Vote>,
     rules: &config::VoteRules,
     candidates: &Option<Vec<config::Candidate>>,

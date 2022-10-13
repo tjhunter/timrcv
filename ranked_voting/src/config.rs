@@ -1,14 +1,26 @@
 // ********* Input data structures ***********
 
-// All the possible choices that can be made on a ballot
+use std::error::Error;
+use std::fmt::Display;
+
+/// All the possible states corresponding to a choice in a ballot.
+///
+/// In most cases, it is enough to use the higher-level builder API.
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub enum BallotChoice {
+    /// A candidate, which may or may not be valid.
     Candidate(String),
+    /// A name that has been already written out as not being a
+    /// declared candidate.
     UndeclaredWriteIn,
+    /// An excess of choices for this particular rank.
+    /// The current system does not acccept more than one vote per rank.
+    /// Any greater number will be treated as overvote.
     Overvote,
-    Undervote, // Blank vote
-    // A blank content in the vote.
-    // This is the policy with blank votes that are not clearly labeled as under- or overvotes.
+    /// A missing vote.
+    Undervote,
+    /// A blank content in the vote or some content that is not valid.
+    /// This is the policy with blank votes that are not clearly labeled as under- or overvotes.
     Blank,
 }
 
@@ -49,6 +61,14 @@ pub struct VotingResult {
 pub enum VotingErrors {
     EmptyElection,
     NoConvergence,
+}
+
+impl Error for VotingErrors {}
+
+impl Display for VotingErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "VotingError in ranked_choice")
+    }
 }
 
 // ********* Configuration **********
