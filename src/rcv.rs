@@ -354,8 +354,8 @@ fn validate_rules(rcv_rules: &RcvRules) -> RcvResult<VoteRules> {
                 )
             }
         },
-        number_of_winners: 1,         // TODO: implement
-        minimum_vote_threshold: None, // TODO: implement
+        // number_of_winners: 1,         // TODO: implement
+        // minimum_vote_threshold: None, // TODO: implement
         max_rankings_allowed: match rcv_rules.max_rankings_allowed.parse::<u32>() {
             Err(_) if rcv_rules.max_rankings_allowed == "max" => None,
             Result::Ok(x) if x > 0 => Some(x),

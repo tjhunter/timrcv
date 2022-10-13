@@ -205,14 +205,14 @@ pub struct VoteRules {
     pub overvote_rule: OverVoteRule,
     /// Winner selection (see documentation)
     pub winner_election_mode: WinnerElectionMode,
-    // TODO: remove
-    pub number_of_winners: u32,
-    /// If set, indicates the minimum number of votes that a candidate
-    /// must have in order to be considered. Any number below will lead to
-    /// the candidate to be immediately eliminated.
-    ///
-    /// Default: None (no threshold)
-    pub minimum_vote_threshold: Option<u32>,
+    // // TODO: remove
+    // // pub(crate) number_of_winners: u32,
+    // /// If set, indicates the minimum number of votes that a candidate
+    // /// must have in order to be considered. Any number below will lead to
+    // /// the candidate to be immediately eliminated.
+    // ///
+    // /// Default: None (no threshold)
+    // pub minimum_vote_threshold: Option<u32>,
     /// Control of skipped rankings (blank or undervote)
     pub max_skipped_rank_allowed: MaxSkippedRank,
     /// The maximum number of rankings (choices) allowed for each ballot.
@@ -236,8 +236,8 @@ impl VoteRules {
         overvote_rule: OverVoteRule::AlwaysSkipToNextRank,
         winner_election_mode: WinnerElectionMode::SingelWinnerMajority,
         max_skipped_rank_allowed: MaxSkippedRank::Unlimited,
-        number_of_winners: 1,
-        minimum_vote_threshold: None,
+        // number_of_winners: 1,
+        // minimum_vote_threshold: None,
         max_rankings_allowed: None,
         elimination_algorithm: EliminationAlgorithm::Single,
         duplicate_candidate_mode: DuplicateCandidateMode::SkipDuplicate,
