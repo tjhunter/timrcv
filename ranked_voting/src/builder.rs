@@ -5,11 +5,11 @@ pub use crate::config::*;
 /// Using the builder should be considered for performance code.
 ///
 /// ```
-/// pub use ranked_voting::builder::Builder;
+/// pub use ranked_voting::Builder;
 /// pub use ranked_voting::VoteRules;
 /// # use ranked_voting::VotingErrors;
 ///
-/// let mut builder = Builder::new(&VoteRules::DEFAULT_RULES)?
+/// let mut builder = Builder::new(&VoteRules::default())?
 ///     .candidates(&["Anna".to_string(), "Bob".to_string()])?;
 ///
 /// builder.add_vote_simple(&["Anna".to_string(), "Clara".to_string(), "".to_string()])?;
@@ -20,7 +20,7 @@ pub use crate::config::*;
 pub struct Builder {
     pub(crate) _rules: VoteRules,
     pub(crate) _candidates: Option<Vec<Candidate>>,
-    pub(crate) _votes: Vec<Vote>,
+    pub(crate) _votes: Vec<Ballot>,
 }
 
 impl Builder {
@@ -83,13 +83,13 @@ impl Builder {
             };
             choices.push(cand);
         }
-        self.add_vote_2(&Vote {
+        self.add_vote_2(&Ballot {
             count: count as u64,
             candidates: choices,
         })
     }
 
-    pub fn add_vote_2(&mut self, vote: &Vote) -> Result<(), VotingErrors> {
+    pub fn add_vote_2(&mut self, vote: &Ballot) -> Result<(), VotingErrors> {
         self._votes.push(vote.clone());
         Ok(())
     }

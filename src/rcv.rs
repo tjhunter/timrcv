@@ -181,7 +181,7 @@ fn read_ranking_data(
     cfs: &FileSource,
     candidates_o: Option<&Vec<RcvCandidate>>,
     rules: &RcvRules,
-) -> RcvResult<(Vec<ranked_voting::Vote>, Vec<RcvCandidate>)> {
+) -> RcvResult<(Vec<ranked_voting::Ballot>, Vec<RcvCandidate>)> {
     let p: PathBuf = [root_path.clone(), cfs.file_path.clone()].iter().collect();
     let p2 = p.as_path().display().to_string();
     info!("Attempting to read rank file {:?}", p2);
@@ -244,9 +244,9 @@ fn validate_ballots(
     candidates: &[RcvCandidate],
     source: &FileSource,
     _rules: &RcvRules,
-) -> RcvResult<Vec<Vote>> {
+) -> RcvResult<Vec<Ballot>> {
     let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
-    let mut res: Vec<Vote> = Vec::new();
+    let mut res: Vec<Ballot> = Vec::new();
 
     let treat_blank_as_undeclared_write_in =
         source.treat_blank_as_undeclared_write_in.unwrap_or(false);
@@ -293,7 +293,7 @@ fn validate_ballots(
         let count = pb.count.unwrap_or(1);
 
         if count > 0 && !candidates.is_empty() {
-            let v = Vote {
+            let v = Ballot {
                 candidates: choices,
                 count,
             };
@@ -441,7 +441,7 @@ pub fn run_election(
     };
 
     let mut validated_candidates_o: Option<Vec<RcvCandidate>> = None;
-    let mut data: Vec<Vote> = Vec::new();
+    let mut data: Vec<Ballot> = Vec::new();
     for cfs in config.cvr_file_sources.iter() {
         let (mut file_data, file_validated_candidates) = read_ranking_data(
             root_path.as_os_str().to_str().unwrap().to_string(),
@@ -459,7 +459,7 @@ pub fn run_election(
     debug!("run_election:data: {:?} vote records", data.len());
     assert!(validated_candidates_o.is_some());
 
-    let mut builder = ranked_voting::builder::Builder::new(&rules).context(RvVotingSnafu {})?;
+    let mut builder = ranked_voting::Builder::new(&rules).context(RvVotingSnafu {})?;
 
     if let Some(cands) = validated_candidates_o {
         let mut candidate_names: Vec<String> = Vec::new();
@@ -477,7 +477,7 @@ pub fn run_election(
         builder.add_vote_2(&ballot).context(RvVotingSnafu {})?;
     }
 
-    let result = ranked_voting::run_single_winner(&builder).context(RvVotingSnafu {})?;
+    let result = ranked_voting::run_election(&builder).context(RvVotingSnafu {})?;
 
     // Assemble the final json
     let result_js = build_summary_js(&config, &result);
