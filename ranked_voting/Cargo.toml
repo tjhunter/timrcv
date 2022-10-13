@@ -7,7 +7,7 @@ edition = "2021"
 log = "0.4"
 sha256="1.0"
 # TODO: use as fallback for the crypto mode
-java-rand = "0.2"
+# java-rand = "0.2"
 
 [dev-dependencies]
 env_logger = "0.9"
