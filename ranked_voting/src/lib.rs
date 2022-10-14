@@ -217,6 +217,28 @@ pub fn run_election1(
     run_election(&builder)
 }
 
+fn candidates_from_ballots(ballots: &[Ballot]) -> Vec<config::Candidate> {
+    // Take everyone from the election as a valid candidate.
+    let mut cand_set: HashSet<String> = HashSet::new();
+    for ballot in ballots.iter() {
+        for choice in ballot.candidates.iter() {
+            if let BallotChoice::Candidate(name) = choice {
+                cand_set.insert(name.clone());
+            }
+        }
+    }
+    let mut cand_vec: Vec<String> = cand_set.iter().cloned().collect();
+    cand_vec.sort();
+    cand_vec
+        .iter()
+        .map(|n| config::Candidate {
+            name: n.clone(),
+            code: None,
+            excluded: false,
+        })
+        .collect()
+}
+
 /// Runs the voting algorithm with the given rules for the given votes.
 ///
 /// Arguments:
@@ -227,17 +249,20 @@ pub fn run_election1(
 fn run_voting_stats(
     coll: &Vec<Ballot>,
     rules: &config::VoteRules,
-    candidates: &Option<Vec<config::Candidate>>,
+    candidates_o: &Option<Vec<config::Candidate>>,
 ) -> Result<VotingResult, VotingErrors> {
     info!("run_voting_stats: Processing {:?} votes", coll.len());
+    let candidates = candidates_o
+        .to_owned()
+        .unwrap_or_else(|| candidates_from_ballots(coll));
+
     debug!(
         "run_voting_stats: candidates: {:?}, rules: {:?}",
         coll.len(),
         candidates,
     );
 
-    // TODO: ensure candidates
-    let cr: CheckResult = checks(coll, &candidates.clone().unwrap(), rules)?;
+    let cr: CheckResult = checks(coll, &candidates, rules)?;
     let checked_votes = cr.votes;
     debug!(
         "run_voting_stats: Checked votes: {:?}, detected UWIs {:?}",
@@ -596,13 +621,15 @@ fn run_one_round(
     }
 
     // Find the candidates to eliminate
-    let p = find_eliminated_candidates(&tally, rules, candidate_names, num_round);
+    let p = find_eliminated_candidates(&tally, rules, candidate_names, num_round)?;
     let resolved_tiebreak: TiebreakSituation = p.1;
     let eliminated_candidates: HashSet<CandidateId> = p.0.iter().cloned().collect();
 
     // TODO strategy to pick the winning candidates
 
-    assert!(!eliminated_candidates.is_empty(), "No candidate eliminated");
+    if eliminated_candidates.is_empty() {
+        return Err(VotingErrors::NoCandidateToEliminate);
+    }
     debug!("run_one_round: tiebreak situation: {:?}", resolved_tiebreak);
     debug!("run_one_round: eliminated_candidates: {:?}", p.0);
 
@@ -728,22 +755,22 @@ fn find_eliminated_candidates(
     rules: &config::VoteRules,
     candidate_names: &[(String, CandidateId)],
     num_round: u32,
-) -> (Vec<CandidateId>, TiebreakSituation) {
+) -> Result<(Vec<CandidateId>, TiebreakSituation), VotingErrors> {
     // Try to eliminate candidates in batch
     if rules.elimination_algorithm == EliminationAlgorithm::Batch {
         if let Some(v) = find_eliminated_candidates_batch(tally) {
-            return (v, TiebreakSituation::Clean);
+            return Ok((v, TiebreakSituation::Clean));
         }
     }
 
     if let Some((v, tb)) =
         find_eliminated_candidates_single(tally, rules.tiebreak_mode, candidate_names, num_round)
     {
-        return (v, tb);
+        return Ok((v, tb));
     }
     // No candidate to eliminate.
     // TODO check the conditions for this to happen.
-    unimplemented!("find_eliminated_candidates: No candidate to eliminate");
+    Err(VotingErrors::EmptyElection)
 }
 
 fn find_eliminated_candidates_batch(
