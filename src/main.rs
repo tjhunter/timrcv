@@ -1,41 +1,11 @@
-pub mod rcv;
-
-use crate::rcv::run_election;
-use crate::rcv::RcvResult;
-
 use clap::Parser;
-
 use env_logger::Env;
 
-// https://github.com/tjhunter/timrcv#readme
-
-/// This is a ranked voting tabulation program.
-#[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
-struct Args {
-    /// (file path, optional) The file containing the election data. (Only JSON election descriptions are currently supported)
-    /// For more information about the file format, read the documentation at
-    #[clap(short, long, value_parser)]
-    config: Option<String>,
-    /// (file path) A reference file containing the outcome of an election in JSON format. If provided, timrcv will
-    /// check that the tabulated output matches the reference.
-    #[clap(short, long, value_parser)]
-    reference: Option<String>,
-
-    /// (file path, 'stdout' or empty) If specified, the summary of the election will be written in JSON format to the given
-    /// location. Setting this option overrides the path that may be specified with the --config option.
-    #[clap(short, long, value_parser)]
-    out: Option<String>,
-
-    /// (file path or empty) If specified, the summary of the election will be written in JSON format to the given
-    /// location. Setting this option overrides what may be specified with the --data option.
-    #[clap(short, long, value_parser)]
-    input: Option<String>,
-
-    /// If passed as an argument, will turn on verbose logging to the standard output.
-    #[clap(long, takes_value = false)]
-    verbose: bool,
-}
+mod args;
+pub mod rcv;
+use crate::args::Args;
+use crate::rcv::run_election;
+use crate::rcv::RcvResult;
 
 const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 
@@ -54,5 +24,15 @@ fn main() -> RcvResult<()> {
     });
     let _ = env_logger::try_init_from_env(env);
 
-    run_election(args.config, args.reference, args.input, args.out, false).map(|_| ())
+    let args2 = args.clone();
+
+    run_election(
+        args.config,
+        args.reference,
+        args.input,
+        args.out,
+        false,
+        Some(args2),
+    )
+    .map(|_| ())
 }

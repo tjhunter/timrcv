@@ -91,6 +91,7 @@ pub enum VotingErrors {
     ///
     // TODO: explain when it may happen
     NoConvergence,
+    NoCandidateToEliminate,
 }
 
 impl Error for VotingErrors {}

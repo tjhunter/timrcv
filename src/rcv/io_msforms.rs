@@ -284,22 +284,39 @@ fn get_ranked_choices(cfs: &FileSource) -> BRcvResult<Vec<(String, u32)>> {
 }
 
 fn get_range(path: &String, cfs: &FileSource) -> BRcvResult<calamine::Range<DataType>> {
-    let worksheet_name = cfs
-        .excel_worksheet_name
-        .clone()
-        .unwrap_or_else(|| "Form1".to_string());
+    let worksheet_name_o = cfs.excel_worksheet_name.clone();
     debug!(
         "read_excel_file: path: {:?} worksheet: {:?}",
-        &path, &worksheet_name
+        &path, &worksheet_name_o
     );
     let p = path.clone();
     let mut workbook: Xlsx<_> =
         open_workbook(p).context(OpeningExcelSnafu { path: path.clone() })?;
 
-    let wrange = workbook
-        .worksheet_range(&worksheet_name)
-        .context(EmptyExcelSnafu {})?
-        .context(OpeningExcelSnafu { path: path.clone() })?;
+    // A worksheet name was provided, use it.
+    if let Some(worksheet_name) = worksheet_name_o {
+        let wrange = workbook
+            .worksheet_range(&worksheet_name)
+            .context(EmptyExcelSnafu {})?
+            .context(OpeningExcelSnafu { path: path.clone() })?;
 
-    Ok(wrange)
+        Ok(wrange)
+    } else {
+        let all_worksheets = workbook.worksheets();
+        match all_worksheets.as_slice() {
+            [] => unimplemented!("Empty worksheet"),
+            [(worksheet_name, wrange)] => {
+                debug!(
+                    "read_excel_file: path: {:?} worksheet: {:?}",
+                    &path, &worksheet_name
+                );
+                Ok(wrange.clone())
+            }
+            _ => {
+                unimplemented!(
+                    "read_excel_file: too many worksheets, the worksheet name must be provided"
+                );
+            }
+        }
+    }
 }

@@ -15,7 +15,6 @@ use serde_json::Value as JSValue;
 use std::collections::HashSet;
 use text_diff::print_diff;
 
-use crate::rcv::config_reader::*;
 mod config_reader;
 pub mod io_cdf;
 pub mod io_common;
@@ -23,6 +22,9 @@ pub mod io_csv;
 pub mod io_dominion;
 mod io_ess;
 mod io_msforms;
+
+use crate::args::Args;
+use crate::rcv::config_reader::*;
 
 #[derive(Debug, Snafu)]
 pub enum RcvError {
@@ -401,8 +403,9 @@ pub fn run_election(
     in_path: Option<String>,
     out_path: Option<String>,
     override_out_path: bool,
+    args_o: Option<Args>,
 ) -> RcvResult<()> {
-    let config: RcvConfig = {
+    let mut config: RcvConfig = {
         if let Some(config_path) = config_path_o.as_ref() {
             let config_p = Path::new(config_path.as_str());
             debug!("Opening file {:?}", config_p);
@@ -414,6 +417,23 @@ pub fn run_election(
         }
     };
 
+    // Adding all the extra rules that may be required from the arguments
+    if let Some(args) = args_o {
+        for input in config.cvr_file_sources.iter_mut() {
+            if let Some(choices) = args.choices.as_ref() {
+                input.choices = Some(choices.clone());
+            }
+            if let Some(input_type) = args.input_type.as_ref() {
+                input.provider = input_type.clone();
+            }
+
+            if let Some(name) = args.excel_worksheet_name.as_ref() {
+                input.excel_worksheet_name = Some(name.clone());
+            }
+        }
+    }
+
+    // Moved here because the borrow checker struggles inside the closure.
     let current_dir = std::env::current_dir()
         .ok()
         .context(MissingParentDirSnafu {})?;
@@ -541,6 +561,7 @@ fn run_election_test(test_name: &str, config_lpath: &str, summary_lpath: &str, i
         None,
         None,
         true,
+        None,
     );
     if let Err(e) = res {
         warn!("Error occured {:?}", e);

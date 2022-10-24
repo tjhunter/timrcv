@@ -1,6 +1,98 @@
+/*!
+The `ranked_voting` crate provides a thoroughly tested implementation of the
+[Instant-Runoff Voting algorithm](https://en.wikipedia.org/wiki/Instant-runoff_voting),
+which is also called ranked-choice voting in the United States, preferential voting
+in Australia or alternative vote in the United Kingdom.
+
+This library can be used in multiple flavours:
+- as a simple library for most cases (see the [run_election1] function)
+
+- as a command-line utility that provides fast and easy election results that can then
+be displayed or exported. The section [timrcv](#timrcv) provides a manual.
+
+- as a more complex library that can handle all the diversity of implementations. It provides
+for example multiple ways to deal with blank or absentee ballots, undeclared candidates, etc.
+If you are attempting to replicate the results of a specific elections, you should
+carefully check the voting rules and use the configuration accordingly. If you are doing so,
+you should check [run_election] and [VoteRules]
+
+# timrcv
+
+`timrcv` is a command-line program to run an instant runoff election. It can accomodate all common formats from vendors
+or public offices. This document presents a tutorial on how to use it.
+
+## Installation
+
+Download the latest release from the [releases page](https://github.com/tjhunter/timrcv/releases).
+ Pre-compiled versions are available for Windows, MacOS and Linux.
+
+
+## Quick start with existing data
+
+If you are running a poll and are collecting data using Microsoft Forms,
+Google Form, Qualtrics, look at the [quick start using Google Forms](quick_start/index.html).
+
+If you have very simple needs and you can collect data in a
+small text file, `timrcv` accepts a simple format of
+comma-separated values.
+
+
+To get started, let us say that you have a file with the following records of votes ([example.csv](https://github.com/tjhunter/timrcv/raw/main/tests/csv_simple_2/example.csv)). Each line corresponds to a vote, and A,B,C and D are the candidates:
+
+```text
+A,B,,D
+A,C,B,
+B,A,D,C
+B,C,A,D
+C,A,B,D
+D,B,A,C
+```
+Each line is a recorded vote. The first line `A,B,,D` says that this voter preferred candidate A over everyone else (his/her first choice), followed by B as a second choice and finally D as a last choice.
+
+Running a vote with the default options is simply:
+
+```bash
+timrcv --input example.csv
+```
+
+Output:
+
+```text
+[ INFO  ranked_voting] run_voting_stats: Processing 6 votes
+[ INFO  ranked_voting] Processing 6 aggregated votes
+[ INFO  ranked_voting] Candidate: 1: A
+[ INFO  ranked_voting] Candidate: 2: B
+[ INFO  ranked_voting] Candidate: 3: C
+[ INFO  ranked_voting] Candidate: 4: D
+[ INFO  ranked_voting] Round 1 (winning threshold: 4)
+[ INFO  ranked_voting]       2 B -> running
+[ INFO  ranked_voting]       2 A -> running
+[ INFO  ranked_voting]       1 C -> running
+[ INFO  ranked_voting]       1 D -> eliminated:1 -> B,
+[ INFO  ranked_voting] Round 2 (winning threshold: 4)
+[ INFO  ranked_voting]       3 B -> running
+[ INFO  ranked_voting]       2 A -> running
+[ INFO  ranked_voting]       1 C -> eliminated:1 -> A,
+[ INFO  ranked_voting] Round 3 (winning threshold: 4)
+[ INFO  ranked_voting]       3 A -> running
+[ INFO  ranked_voting]       3 B -> eliminated:3 -> A,
+[ INFO  ranked_voting] Round 4 (winning threshold: 4)
+[ INFO  ranked_voting]       6 A -> elected
+```
+
+`timrcv` supports many options (input and output formats, validation of the candidates, configuration of the tabulating process, ...).
+ Look at the [configuration section](manual/index.html#configuration) of the manual for more details.
+
+
+
+
+ */
+
 mod builder;
 mod config;
 pub use builder::Builder;
+pub mod manual;
+pub mod quick_start;
 use log::{debug, info};
 
 use std::{
@@ -217,6 +309,28 @@ pub fn run_election1(
     run_election(&builder)
 }
 
+fn candidates_from_ballots(ballots: &[Ballot]) -> Vec<config::Candidate> {
+    // Take everyone from the election as a valid candidate.
+    let mut cand_set: HashSet<String> = HashSet::new();
+    for ballot in ballots.iter() {
+        for choice in ballot.candidates.iter() {
+            if let BallotChoice::Candidate(name) = choice {
+                cand_set.insert(name.clone());
+            }
+        }
+    }
+    let mut cand_vec: Vec<String> = cand_set.iter().cloned().collect();
+    cand_vec.sort();
+    cand_vec
+        .iter()
+        .map(|n| config::Candidate {
+            name: n.clone(),
+            code: None,
+            excluded: false,
+        })
+        .collect()
+}
+
 /// Runs the voting algorithm with the given rules for the given votes.
 ///
 /// Arguments:
@@ -227,17 +341,20 @@ pub fn run_election1(
 fn run_voting_stats(
     coll: &Vec<Ballot>,
     rules: &config::VoteRules,
-    candidates: &Option<Vec<config::Candidate>>,
+    candidates_o: &Option<Vec<config::Candidate>>,
 ) -> Result<VotingResult, VotingErrors> {
     info!("run_voting_stats: Processing {:?} votes", coll.len());
+    let candidates = candidates_o
+        .to_owned()
+        .unwrap_or_else(|| candidates_from_ballots(coll));
+
     debug!(
         "run_voting_stats: candidates: {:?}, rules: {:?}",
         coll.len(),
         candidates,
     );
 
-    // TODO: ensure candidates
-    let cr: CheckResult = checks(coll, &candidates.clone().unwrap(), rules)?;
+    let cr: CheckResult = checks(coll, &candidates, rules)?;
     let checked_votes = cr.votes;
     debug!(
         "run_voting_stats: Checked votes: {:?}, detected UWIs {:?}",
@@ -596,13 +713,15 @@ fn run_one_round(
     }
 
     // Find the candidates to eliminate
-    let p = find_eliminated_candidates(&tally, rules, candidate_names, num_round);
+    let p = find_eliminated_candidates(&tally, rules, candidate_names, num_round)?;
     let resolved_tiebreak: TiebreakSituation = p.1;
     let eliminated_candidates: HashSet<CandidateId> = p.0.iter().cloned().collect();
 
     // TODO strategy to pick the winning candidates
 
-    assert!(!eliminated_candidates.is_empty(), "No candidate eliminated");
+    if eliminated_candidates.is_empty() {
+        return Err(VotingErrors::NoCandidateToEliminate);
+    }
     debug!("run_one_round: tiebreak situation: {:?}", resolved_tiebreak);
     debug!("run_one_round: eliminated_candidates: {:?}", p.0);
 
@@ -728,22 +847,22 @@ fn find_eliminated_candidates(
     rules: &config::VoteRules,
     candidate_names: &[(String, CandidateId)],
     num_round: u32,
-) -> (Vec<CandidateId>, TiebreakSituation) {
+) -> Result<(Vec<CandidateId>, TiebreakSituation), VotingErrors> {
     // Try to eliminate candidates in batch
     if rules.elimination_algorithm == EliminationAlgorithm::Batch {
         if let Some(v) = find_eliminated_candidates_batch(tally) {
-            return (v, TiebreakSituation::Clean);
+            return Ok((v, TiebreakSituation::Clean));
         }
     }
 
     if let Some((v, tb)) =
         find_eliminated_candidates_single(tally, rules.tiebreak_mode, candidate_names, num_round)
     {
-        return (v, tb);
+        return Ok((v, tb));
     }
     // No candidate to eliminate.
     // TODO check the conditions for this to happen.
-    unimplemented!("find_eliminated_candidates: No candidate to eliminate");
+    Err(VotingErrors::EmptyElection)
 }
 
 fn find_eliminated_candidates_batch(
