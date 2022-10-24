@@ -1,6 +1,6 @@
 [package]
-name = "ranked-voting"
-version = "0.2.0"
+name = "timrcv"
+version = "0.3.0"
 edition = "2021"
 # author = ["Tim Hunter <tjhunter@cs.stanford.edu>"]
 
