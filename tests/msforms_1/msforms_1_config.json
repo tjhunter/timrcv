@@ -17,8 +17,9 @@
       "overvoteLabel": "",
       "undervoteLabel": "",
       "undeclaredWriteInLabel": "",
-      "idColumnIndex" : "A",
-      "firstVoteColumnIndex" : "F"
+      "idColumnIndex": "A",
+      "firstVoteColumnIndex": "F",
+      "excelWorksheetName": "Form1"
     }
   ],
   "candidates": [
@@ -30,14 +31,15 @@
     },
     {
       "name": "Option 3"
-    }],
-  "rules" : {
+    }
+  ],
+  "rules": {
     "tiebreakMode": "useCandidateOrder",
     "overvoteRule": "exhaustImmediately",
     "winnerElectionMode": "singleWinnerMajority",
     "numberOfWinners": "1",
     "maxSkippedRanksAllowed": "1",
     "maxRankingsAllowed": "8",
-    "rulesDescription" : "Simple"
+    "rulesDescription": "Simple"
   }
 }

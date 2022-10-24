@@ -17,8 +17,15 @@
       "overvoteLabel": "",
       "undervoteLabel": "",
       "undeclaredWriteInLabel": "",
-      "idColumnIndex" : "A",
-      "choices": ["Option 2-1","Option 2-2","Option 2-3","Option 2-4","Option 2-5"]
+      "idColumnIndex": "A",
+      "excelWorksheetName": "Form1",
+      "choices": [
+        "Option 2-1",
+        "Option 2-2",
+        "Option 2-3",
+        "Option 2-4",
+        "Option 2-5"
+      ]
     }
   ],
   "candidates": [
@@ -37,15 +44,15 @@
     {
       "name": "candidate 2-5"
     }
-    ],
-  "rules" : {
+  ],
+  "rules": {
     "tiebreakMode": "useCandidateOrder",
     "overvoteRule": "exhaustImmediately",
     "winnerElectionMode": "singleWinnerMajority",
     "numberOfWinners": "1",
-    "batchElimination" : true,
+    "batchElimination": true,
     "maxSkippedRanksAllowed": "1",
     "maxRankingsAllowed": "8",
-    "rulesDescription" : "Simple"
+    "rulesDescription": "Simple"
   }
 }
