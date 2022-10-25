@@ -8,7 +8,7 @@ readme = "../README.md"
 repository = "https://github.com/tjhunter/timrcv"
 description = "Industrial-strength implementation of the instant-runoff voting algorithm (library and command line interface)"
 categories = ["science"]
-keywords = ["irv", "tally", "election", "voting", "vote", "ballot"]
+keywords = ["irv", "tally", "election", "voting", "vote"]
 include = [
     "**/*.rs",
     "Cargo.toml",
